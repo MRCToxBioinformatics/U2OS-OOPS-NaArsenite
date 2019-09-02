@@ -1,0 +1,53 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+theme_set(theme_bw(base_size = 20))
+```
+
+#Create dummy data
+Type = type of proteomic data. Either "Total" or "OOPS"
+Intensity = Logged protein intensity
+```{r}
+df <- data.frame("Replicate"=factor(rep(c(rep(1,3), rep(2,3), rep(3,3)),2)),
+                 "Condition"=factor(rep(rep(c("Unstarved", "Starved", "Insulin"), 3),2),
+                                    levels=c("Unstarved", "Starved", "Insulin")),
+                 "Type"=factor(rep(c("OOPS", "Total"), each=9), levels=c("Total", "OOPS")),
+                 "Intensity"=c(2,2,4,1,1.5,3,3,3.5,6,4,4.5,4,3,3,3,5,5,4.5))
+
+
+
+print(df)
+```
+
+Just to see what the data look like
+```{r}
+ggplot(df, aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~Type)
+```
+Say, we were just interested in the change between Starved vs Insulin, we could use a linear model with the formula
+
+`Intensity~Condition*Type+Replicate`
+
+This models the intensity for the protein across all experiments as being affected by the Condition, Type, Condition*Type interaction and Replicate. The first two, Condition and type are obviously required to model the protein intensity since the condition is expected to impact the abundance of some proteins, and the relative abundance of the protein in the total proteome and OOPS proteome is almost certain to be different. The interaction term describes whether the change in intensity between conditions is the same for Total and OOPS. If not (I.e coefficient is signficantly non-zero), then we can infer that the RNA binding of the protein has changed. Finally, the replicate is included here as a "blocking factor", which is to say we are not interested in the coefficient but we expect that the replicate may have a impact on the intensity of the protein. 
+
+Note, it's possible, the replicate has an impact on the change in RNA binding between Starved->Insulin. If so, we would need to re-think this model. I'll check this with the real data.
+
+```{r}
+fit <- df %>%
+  filter(Condition %in% c("Starved", "Insulin")) %>%
+  lm(formula=Intensity~Condition*Type+Replicate)
+
+print(summary(fit))
+
+```
+In the above, the important coefficient is `ConditionInsulin:TypeOOPS`. Note that this coefficient is positive (2.33) which means the intensity in the OOPS proteome increased more from Starved->Insulin that it did in the Total proteome. The p-value for this coefficient is 0.00344 so this coefficient is significantly non-zero, e.g there was a signficant increase in RNA binding. We can also use this Coefficient to estimate the fold change in RNA binding. 
+
+Also, note that the overall r-squared is 0.8833 and the overall p-value is 0.001575, e.g the model explains the data well (which it should as we've made it up ourselves!)

@@ -1,0 +1,271 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+Here we simulate some datasets to estimate the number of replicates required to reach a reasonable power to detect change in RNA binding
+```{r}
+source("../../CamProt_R/Utility.R")
+library(tidyverse)
+library(reshape2)
+```
+
+
+```{r}
+total_protein_quant <- readRDS("../results/total_res_pro_agg_norm")
+oops_protein_quant <- readRDS("../results/rbp_res_pro_agg_norm")
+```
+
+A reminder of the % CV for the Total proteome and OOPS data
+```{r}
+plotCVs <- function(obj){
+  tmp <- exprs(obj)
+  colnames(tmp) <- pData(obj)$Sample_name
+  CVs <- melt(tmp) %>% separate(Var2, into=c("Condition", "Replicate")) %>%
+    group_by(Var1, Condition) %>%
+    dplyr::mutate("CV"=sd(2^value)/mean(2^value), "CV_log"=sd(value)/mean(value))
+  
+  p <- ggplot(CVs, aes(x=CV, colour=Condition)) + geom_density() + my_theme
+  return(list("p"=p, "CVs"=CVs))
+}
+
+p_total <- plotCVs(total_protein_quant)
+print(p_total$p + ggtitle("Total"))
+#print(p_total + aes(CV_log))
+
+p_oops <- plotCVs(oops_protein_quant)
+print(p_oops$p+ ggtitle("OOPS"))
+#print(p_oops + aes(CV_log))
+```
+We'll just use the median CV for each data set
+```{r}
+median_total_CV <- median(p_total$CVs$CV)
+median_oops_CV <- median(p_oops$CVs$CV)
+```
+
+Functions to simulate data
+```{r}
+total_abundances <- 2^p_total$CVs$value
+oops_abundances <- 2^p_oops$CVs$value
+
+n_sims <- 100
+max_reps <- 10
+
+simulateValues <- function(obj, median_cv, ix, max_reps, n_sims){
+  simulated_values <- sapply(obj, FUN = function(x) rnorm(max_reps, x, x*median_cv))
+  colnames(simulated_values) <- seq(ix, ix+(n_sims-1))
+  rownames(simulated_values) <- 1:max_reps
+  simulated_values <- melt(simulated_values)
+  colnames(simulated_values) <- c("Replicate", "Protein_Ix", "Intensity")
+  
+  return(simulated_values)
+}
+
+getSimulatedDF <- function(change_range=seq(-2,2,0.2), median_total_CV=0.02, median_oops_CV=0.02){
+  rows <- NULL
+  ix = 1
+  for (log2_diff_size in 2^change_range){
+    total_abundance_c <- sample(total_abundances, n_sims, replace=TRUE)
+    simulated_values_total_c <- simulateValues(total_abundance_c, median_total_CV, ix, max_reps, n_sims)
+    simulated_values_total_c$Type <- "Total"
+    simulated_values_total_c$Condition <- "Control"
+  
+    changes <- rnorm(n_sims, mean=1, sd=0.1)
+    total_abundance_t <- total_abundance_c * changes
+    simulated_values_total_t <- simulateValues(total_abundance_t, median_total_CV, ix, max_reps, n_sims)
+    simulated_values_total_t$Type <- "Total"
+    simulated_values_total_t$Condition <- "Treatment"
+    
+    oops_abundance_c <- sample(oops_abundances, n_sims, replace=TRUE)
+    simulated_values_oops_c <- simulateValues(oops_abundance_c, median_oops_CV, ix, max_reps, n_sims) 
+    simulated_values_oops_c$Type <- "OOPS"
+    simulated_values_oops_c$Condition <- "Control"
+    
+    oops_changes <- changes * log2_diff_size
+    oops_abundance_t <- oops_abundance_c * oops_changes
+    simulated_values_oops_t <- simulateValues(oops_abundance_t, median_oops_CV, ix, max_reps, n_sims)
+    simulated_values_oops_t$Type <- "OOPS"
+    simulated_values_oops_t$Condition <- "Treatment"
+  
+      
+    simulated_values <- rbind(simulated_values_total_c, simulated_values_total_t,
+                              simulated_values_oops_c, simulated_values_oops_t)
+    
+    simulated_values$diff <- log2_diff_size
+    if(nrow(simulated_values[is.na(simulated_values$Intensity),])>0){
+      print(oops_changes)
+      print(total_abundance_c)
+      print(total_abundance_t)
+      print(oops_abundance_c)
+      print(oops_abundance_t)
+      stop()
+    }
+    
+    rows[[ix]] <- simulated_values
+    ix <- ix + n_sims
+  }
+  
+  simulated_df <- do.call("rbind", rows)
+  
+  simulated_df$Condition <- factor(simulated_df$Condition, levels=c("Control", "Treatment"))
+  simulated_df$Type <- factor(simulated_df$Type, levels=c("Total", "OOPS"))
+  simulated_df$Intensity <- log2(simulated_df$Intensity)
+  
+  dim(simulated_df)
+  print(head(simulated_df))
+  print(table(simulated_df$Condition, simulated_df$Type))
+  
+
+  return(simulated_df)
+  }
+```
+
+Make two simulation data sets, one with 2% CV, the other with observed CV (8% & 9% for Total and OOPS, respectively)
+```{r}
+simulated_df_2_perc <- getSimulatedDF()
+simulated_df_observed_cv <- getSimulatedDF(median_total_CV=median_total_CV, median_oops_CV=median_oops_CV)
+
+print(dim(simulated_df_2_perc))
+print(dim(simulated_df_observed_cv))
+```
+
+Functions to run linear models
+```{r}
+testModels <- function(obj, model="Intensity~Condition*Type", coeff_of_interest="ConditionTreatment:TypeOOPS"){
+
+  fit <- obj %>% lm(formula=formula(model))
+  #print(summary(fit))
+  #print(obj)
+  fit_values <- c(coef(summary(fit))[coeff_of_interest,],
+                  summary(fit)$adj.r.squared)
+  
+  names(fit_values)[4:5] <- c("p_value", "adj_R_squared")
+  
+  return(fit_values)
+}
+
+runLM <- function(obj, model="Intensity~Condition*Type", coeff_of_interest="ConditionTreatment:TypeOOPS"){
+   results <- obj %>%
+    plyr::ddply("Protein_Ix", function(x) testModels(x, model=model, coeff_of_interest=coeff_of_interest))
+  
+  for(column in c("Estimate", "Std. Error", "t value", "adj_R_squared", "p_value")){
+    results[[column]] <- as.numeric(results[[column]])
+    }
+   
+  results$BH <- p.adjust(results$p_value, method="BH")
+  
+  return(results)
+   
+}
+
+```
+
+Example simulated protein abundances at 2% CV and 8/9% CV
+```{r}
+print(simulated_df_2_perc %>% filter(Protein_Ix==1))
+
+simulated_df_2_perc %>% filter(Protein_Ix==1) %>%
+  ggplot(aes(Condition, Intensity)) +
+  geom_point() +
+  my_theme +
+  facet_wrap(~Type)
+
+simulated_df_observed_cv %>% filter(Protein_Ix==1) %>%
+  ggplot(aes(Condition, Intensity)) +
+  geom_point() +
+  my_theme +
+  facet_wrap(~Type)
+```
+Function to run the linear models using 3-10 replicate
+```{r}
+
+runLM_multiple_reps <- function(simulated_df, reps=2:10,
+                                model="Intensity~Condition*Type",
+                                coeff_of_interest="ConditionTreatment:TypeOOPS"){
+  actual_changes <- simulated_df %>% select(Protein_Ix, diff) %>% distinct()
+  simulated_lm_results <- NULL
+  for (n_reps in reps){
+    simulated_lm_results_rep <- simulated_df %>% filter(Replicate<=n_reps) %>%
+      runLM(., model, coeff_of_interest)  
+    simulated_lm_results_rep$n_reps <- n_reps
+    simulated_lm_results <- rbind(simulated_lm_results, simulated_lm_results_rep)
+  }
+  
+  simulated_lm_results <- simulated_lm_results %>% merge(actual_changes, by="Protein_Ix")
+  simulated_lm_results %>% arrange(desc(abs(diff))) %>% head() %>% print()
+  
+  return(simulated_lm_results)
+}
+
+simulated_lm_results_2_perc <- runLM_multiple_reps(simulated_df_2_perc)
+simulated_lm_results_observed_cv <- runLM_multiple_reps(simulated_df_observed_cv)
+```
+```{r}
+ggplot(simulated_lm_results_observed_cv, aes(adj_R_squared, colour=log2(diff), group=log2(diff))) +
+  geom_density() +
+  scale_colour_gradient2(high="blue", low="red", mid="black") +
+  my_theme
+```
+
+
+Plot the results
+```{r}
+
+plot_results <- function(obj){
+  p <- obj  %>%
+    group_by(n_reps, diff) %>%
+    dplyr::summarise(power=sum(p_value<0.01)) %>%
+    ggplot(aes(log2(diff), n_reps, fill=power)) +
+    geom_tile(colour="grey50") +
+    scale_x_continuous("Change in RNA binding (log2)", breaks=seq(-5,5,1)) +
+    scale_y_continuous("Number of replicates", breaks=2:10) +
+    my_theme
+  
+  print(p)
+  
+  p2 <- p + aes(fill=power>50)
+  print(p2)
+  
+  p3 <- p + aes(fill=power>10)
+  print(p3)
+  
+  invisible(p)
+}
+
+p <- plot_results(simulated_lm_results_2_perc)
+ggsave("../results/power_simulations_2_perc.png", p)
+```
+
+```{r}
+simulated_lm_results_observed_cv %>% group_by(n_reps, diff) %>%
+    dplyr::summarise(power=sum(p_value<0.01))
+
+p <- plot_results(simulated_lm_results_observed_cv)
+ggsave("../results/power_simulations_observed_cvs.png", p)
+
+```
+
+So, with the observed CVs, it's hard to detect small changes in RNA binding (<2-fold). This is because we're looking at an interaction term so we require a lot more replicates to reach the same statistical power. Let's try an alternative approach where we just identify the changes in OOPS abundance and then classify the proteins according to their observed changes in total. Note, this is a less statisticall rigorous approach and the results will require a more cautious interpretation. 
+
+```{r}
+
+simulated_lm_results_2_perc_simple <- simulated_df_2_perc %>% filter(Type=="OOPS") %>%
+  runLM_multiple_reps(reps=2:10, model="Intensity~Condition", coeff_of_interest="ConditionTreatment")
+simulated_lm_results_observed_cv_simple <- simulated_df_observed_cv %>% filter(Type=="OOPS") %>%
+  runLM_multiple_reps(reps=2:10, model="Intensity~Condition", coeff_of_interest="ConditionTreatment")
+#simulated_lm_results_observed_cv_simple <- runLM_multiple_reps(simulated_df_observed_cv, model="Intensity~Condition",
+#                                                          coeff_of_interest="ConditionTreatment")
+```
+```{r}
+simulated_df_2_perc %>% filter(Type=="OOPS")
+```
+
+```{r}
+p <- plot_results(simulated_lm_results_2_perc_simple)
+```
+
+```{r}
+p <- plot_results(simulated_lm_results_observed_cv_simple)
+```
+

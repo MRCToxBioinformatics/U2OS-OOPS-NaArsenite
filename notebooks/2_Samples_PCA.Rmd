@@ -1,0 +1,201 @@
+---
+title: "02. Checking Replicate Quality Using PCA"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+## 01. Introduction  
+Here we want to check for batch effects. The expectation is that the replicate number may influence protein abundance. All replicates for a given condition were run within a single TMT-plex experiment hopefully removing variation from multi-plexing and analysis by the spectrometer.
+
+```{r 00_Reading-in-untility function}
+source("../../CamProt_R/Utility.R")
+```
+Below, we define a function to make the PCA projection plots
+
+```{r 01_Functions}
+
+plotSamplePCA <- function(obj){
+  .data <- exprs(obj)
+  colnames(.data) <- pData(obj)$Sample_name
+  
+  pca <- prcomp(t(.data))
+  
+  loadings <- pca$sdev^2
+  #plot(loadings/sum(loadings),col="red")
+  
+  projections <- data.frame(pca$x) %>%
+    tibble::rownames_to_column("sample") %>% #Convert rownames to a column
+    separate(sample, into=c("Condition", "Replicate"),sep="_")
+  
+  p1 <- projections %>%
+    ggplot(aes(PC1, PC2, shape=Condition, colour=Replicate)) +
+    geom_point(size=3)
+  
+  p2 <- p1 + aes(PC3, PC4)+theme(legend.position = "none")
+  p3 <- p1 + aes(PC5, PC6)+theme(legend.position = "none")
+  
+  #print(p)
+  #print(p2)
+  #print(p3)
+  
+  pt = arrangeGrob(p1,p2,p3,nrow=2,layout_matrix = rbind(c(1,1),c(2,3)))
+  return(list(l = loadings,pca=pt))
+}
+
+```
+## 02. Reading normalised data  
+```{r 02_Reading-in-normalised-data-from-aggregation-analysis}
+
+total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm")
+oops_ni_protein_quant <- readRDS("../results/rbp_ni_res_pro_agg_norm")
+
+total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm")
+oops_us_protein_quant <- readRDS("../results/rbp_us_res_pro_agg_norm")
+
+```
+
+We would like to see the separation of samples across all 4 datasets - Total N_I, RBP N_I, Total U_S, RBP U_S. RBP = OOPS. 
+
+## 03 Plotting variability  
+```{r 03_Plotting-PCAs}
+
+names = c("TotalProt-Non-Insulin-vs-Insulin-Stimulated","RBPs-Non-Insulin-vs-Insulin-Stimulated","TotalProt-Unstarved-vs-Starved","RBPs-Unstarved-vs-Starved")
+c = 1
+
+for(i in list(total_ni_protein_quant,oops_ni_protein_quant,total_us_protein_quant,oops_us_protein_quant)){
+  p = plotSamplePCA(i)
+  pdf(paste("../plots/",names[c],"_PCA-on-normalised-data.pdf",sep=""),paper="a4r",width=14,height=8)
+  plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+  plot(p$pca)
+  dev.off()
+  c = c+1
+}
+
+```
+### 1. Total Protein : Non-Insulin (4hr-Starved) vs Insulin-Stimulated (30min-Insulin)  
+In this case, replicate 1 of the 4hr starved experiment seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 70%). PC2 seems to separate the two conditions (variation 8%) and PC5 seems to capture the different replicates (variation <5%). Based on this, we might want to consider removing replicate 4, 4-hr-Starved from downstream analyisis.  
+
+### 2. RBPs : Non-Insulin (4hr-Starved) vs Insulin-Stimulated (30min-Insulin)  
+Replicates 2 & 4 of the 30min-Insulin treated experiment seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 38%). PC2 seems to separate the two conditions (variation 28%) and there is no real separation based on replicate number even at PC6 which is good. Probably need to draw a heatmap to check what's going on with Rep2, 30-min Insulin.  
+
+### 3. Total Protein : Unstarved vs Insulin-Starved (4hr-Starved) 
+There is a lot of variation in the 4h-Starved samples (replicate 3 being the most extreme) vs the Unstarved samples (except for Replicate 1, Unstarved). PC1 is mostly captuting the differences between Starved and Unstarved samples (variation 52-53%) which is very good. PC2 (15%) and PC3 (12%) also seem to be capturing differences between starved and unstarved samples which is good news when it comes to working out what proteins are actually different between the two conditions. Finally, there is no real separation based on replicate number even at PC6 which is super. 
+
+### 4. RBPs : Unstarved vs Insulin-Starved (4hr-Starved)  
+In this case, replicate 4 of the 4hr-Starved experiment seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 50%). PC2 (18% variation) and PC3 (8%) seem to be capturing differences between starved and unstarved samples which is good and there is no real separation based on replicate number even at PC6.  
+
+Overall, the condition does not appear to have a large impact on relative protein abundance. Note that this does not mean there isn't a change in absolute protein abundance. Also, if the quantification was very noisy, we would also expect this to mask the biological signal. We'll check % CVs below to assess quantification noise.
+
+## 04. Heatmaps of data
+We are going to plot heatmaps of aggregated data to see if we can explain the variability seen in the PCAs above. We do this with peptide level data
+
+```{r 04_Heatmaps-of-data}
+
+total_ni_res_pep_agg = readRDS(file="../results/total_ni_res_pep_agg.rds")
+rbp_ni_res_pep_agg = readRDS(file="../results/rbp_ni_res_pep_agg.rds")
+total_us_res_pep_agg = readRDS(file="../results/total_us_res_pep_agg.rds")
+rbp_us_res_pep_agg = readRDS(file="../results/rbp_us_res_pep_agg.rds")
+
+names = c("TotalProt-Non-Insulin-vs-Insulin-Stimulated","RBPs-Non-Insulin-vs-Insulin-Stimulated","TotalProt-Unstarved-vs-Starved","RBPs-Unstarved-vs-Starved")
+c = 1
+
+pdf("../plots/Missing-value-heatmaps-peptide-level-data.pdf",paper="a4r",width=14,height=8)
+for(i in list(total_ni_res_pep_agg,rbp_ni_res_pep_agg,total_us_res_pep_agg,rbp_us_res_pep_agg)){
+  plotMissing(i,cexCol=0.8,srtCol=45,main = names[c])
+  c = c+1
+}
+dev.off()
+```
+The grey bars display missing values and black display non-missing values.Samples with most number of missing values mostly seem to correspond to those that stick out in the PCA plots in section 3. 
+
+## 05. Comining all datasets  
+This won't be used downstream but is done to check whether there is clear separation between the 4 experiments conducted in the study. To do so, we focus only on those proteins that are present in all 4 treatments/conditions. There are 626 such proteins. We plot PC1 vs PC2, PC3 vs PC4 and PC5 vs PC6 for these 20 samples below. 
+
+```{r 05_Combining-all-datasets}
+intersecting_ni_proteins <- intersect(rownames(total_ni_protein_quant), rownames(oops_ni_protein_quant))
+print(length(intersecting_ni_proteins))
+
+intersecting_us_proteins <- intersect(rownames(total_us_protein_quant), rownames(oops_us_protein_quant))
+print(length(intersecting_us_proteins))
+
+intersecting_all_proteins <- intersect(intersecting_ni_proteins,intersecting_us_proteins)
+print(length(intersecting_all_proteins))
+
+# Combining data across all experiments
+total_ni_exprs <- exprs(total_ni_protein_quant[intersecting_all_proteins,])
+colnames(total_ni_exprs) <- paste0("Total-NI_", pData(total_ni_protein_quant)$Sample_name)
+
+oops_ni_exprs <- exprs(oops_ni_protein_quant[intersecting_all_proteins,])
+colnames(oops_ni_exprs) <- paste0("RBP-NI_", pData(oops_ni_protein_quant)$Sample_name)
+
+total_us_exprs <- exprs(total_us_protein_quant[intersecting_all_proteins,])
+colnames(total_us_exprs) <- paste0("Total-US_", pData(total_us_protein_quant)$Sample_name)
+
+oops_us_exprs <- exprs(oops_us_protein_quant[intersecting_all_proteins,])
+colnames(oops_us_exprs) <- paste0("RBP-US_", pData(oops_us_protein_quant)$Sample_name)
+
+# Mega expression matrix
+combined_exprs <- cbind(total_ni_exprs,oops_ni_exprs,total_us_exprs, oops_us_exprs)
+
+# Mega PCA of all samples
+pca <- prcomp(t(combined_exprs))
+loadings <- pca$sdev^2
+
+# Annotate samples to enable PCA labelling
+projections <- data.frame(pca$x) %>%
+  tibble::rownames_to_column("sample") %>%
+  separate(sample, into=c("Type", "Condition", "Replicate"),sep="_")
+
+# Plotting the PCA with labels so we can tell which samples are most variable. 
+library(ggrepel)
+p <- projections %>%
+  ggplot(aes(PC1, PC2, shape=Condition, colour=Type)) +
+  geom_point(size=3) + geom_text_repel(aes(label=Replicate))+scale_shape_manual(values = c(15,16,17,18)) +theme_classic()
+
+p2 <- p + aes(PC3, PC4)+theme(legend.position = "none")
+p3 <- p + aes(PC5, PC6)+theme(legend.position = "none")
+
+pdf("../plots/Mega-PCA-of-all-20-samples-4-conditions-4-replicates.pdf",paper="a4r",width=14,height=8)
+plot(loadings/sum(loadings))
+pt = arrangeGrob(p,p2,p3,nrow=2,layout_matrix = rbind(c(1,1),c(2,3)))
+plot(pt)
+dev.off()
+
+```
+
+Looking at the PCA plots, albeit using a subset of the total data, overall, the experiment seems to have worked pretty well. PC1 separates the Total from the OOPS/RBP samples very very clearly. PC2 seems to separate the 4 protein extractions - Total NI, Total US, RBP NI and RBP US. PC3 does thsi separation better than PC2. Within the first three components, we capture 40% (PC1) + 23% (PC2) + 18% (PC3) = 81% of the variation in the data arising mainly from the fact that they are Total vs RBP samples and also protein extractions. The intra-condition variability is very very low i.e the replicates, for the most part, cluster tightly and beautifully together.  
+
+Below, we plot the distributions of coefficient of variance for each of the datasets. This is just an additional QC step that the data all looks OK and that there is no big difference in the variance within a condition since this could invalidate the assumptions of heteroskedasticity (same variance per group) that we will make in the modeling of protien abundance later. Note: MR, 02/09/2019. Don't fully understand this. 
+```{r}
+
+plotCVs <- function(obj){
+  tmp <- exprs(obj)
+  colnames(tmp) <- pData(obj)$Sample_name
+  CVs <- melt(tmp) %>% separate(Var2, into=c("Condition", "Replicate"),sep="_") %>%
+    group_by(Var1, Condition) %>%
+    mutate("CV"=sd(2^value)/mean(2^value), "CV_log"=sd(value)/mean(value))
+  
+  p <- ggplot(CVs, aes(x=CV, colour=Condition)) + geom_density() + my_theme
+  return(p)
+}
+
+p_ni_total <- plotCVs(total_ni_protein_quant) + ggtitle("Total_NI") + xlim(0,1)
+#print(p_ni_total)
+print(p_ni_total + aes(CV_log))
+
+p_ni_oops <- plotCVs(oops_ni_protein_quant) + ggtitle("RBPs_NI") + xlim(0,1)
+#print(p_ni_oops)
+print(p_ni_oops + aes(CV_log))
+
+p_us_total <- plotCVs(total_us_protein_quant) + ggtitle("Total_US") + xlim(0,1)
+#print(p_us_total)
+print(p_us_total + aes(CV_log))
+
+p_us_oops <- plotCVs(oops_us_protein_quant) + ggtitle("RBPs_US") + xlim(0,1)
+#print(p_us_oops)
+print(p_us_oops + aes(CV_log))
+
+
+```
+The CVs look as good as we would expect for TMT. 50% of the CVs should be < 0.2 after normalisation - [see here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4361338/). Also the OOPS data is not notably more variable which is good to see.
+

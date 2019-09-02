@@ -1,0 +1,67 @@
+---
+title: "Over-representated GO terms in nominally significant proteins"
+output: html_notebook
+---
+
+Here, we will look at the over-representated GO terms in the "top" proteins according to their estimated changes in RNA binding. We don't detect any significantly over-represented GO terms whatsoever in the proteins with nominal significant changes (p-value < 0.05) in either the Untreated vs starved or Starved vs Insulin comparisons.
+
+```{r 00_Functions-needed}
+
+plotSigTerms <- function(obj,sig_col="sig"){
+  pwf <- makePWF(obj, sig_col, "mean_expression", "UniprotID")
+  #plotPWF(pwf)
+  go_all <- getEnrichedGO(pwf, gene2cat=human_go)
+  p <- plotTerms(go_all, pwf, human_go)
+  print(head(p$g))
+  print(p$plot)
+}
+
+```
+
+
+```{r 01_Read-in-background-files}
+
+# Functions
+source("../../CamProt_R/Enrichment.R", chdir=TRUE)
+
+# GO terms
+human_go <- readRDS("../shared_files/h_sapiens_go_full.rds")
+
+# Proteomics data
+Starved_vs_Insulin <- read.delim("../results/Untreated_vs_Insulin_RNA_binding_changes.tsv")
+Untreated_vs_Starved <- read.delim("../results/Unstarved_vs_Starved_RNA_binding_changes.tsv")
+
+#To perform the GO over-representation correctly, we need to adjust for the abundance of the proteins in the cell lysate.
+total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm")
+total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm")
+
+mean_ni_exprssion <- as.data.frame(apply(2^exprs(total_ni_protein_quant), 1, mean))
+colnames(mean_ni_exprssion) <- "mean_expression"
+
+mean_us_exprssion <- as.data.frame(apply(2^exprs(total_us_protein_quant), 1, mean))
+colnames(mean_us_exprssion) <- "mean_expression"
+```
+
+```{r 02_Set-up-data-for-significance-analysis}
+
+tmp_ni <- Starved_vs_Insulin %>% merge(mean_ni_exprssion, by.x="UniprotID", by.y="row.names") %>%
+  mutate(sig=p_value<0.05, sig_up=(p_value<0.05 & Estimate>0), sig_dw=(p_value<0.05 & Estimate<0)) %>% arrange(BH)
+
+tmp_us <- Untreated_vs_Starved %>% merge(mean_ni_exprssion, by.x="UniprotID", by.y="row.names") %>%
+  mutate(sig=p_value<0.05, sig_up=(p_value<0.05 & Estimate>0), sig_dw=(p_value<0.05 & Estimate<0)) %>% arrange(BH)
+```
+
+
+```{r 03_Plot-significant-GO-terms}
+
+plotSigTerms(tmp_ni, "sig")
+plotSigTerms(tmp_ni, "sig_up")
+plotSigTerms(tmp_ni, "sig_dw")
+
+plotSigTerms(tmp_us, "sig")
+plotSigTerms(tmp_us, "sig_up")
+plotSigTerms(tmp_us, "sig_dw")
+
+```
+
+
