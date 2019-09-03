@@ -1,160 +1,152 @@
 ---
-title: "QC and Aggregation to protein-level quantification"
-output: html_notebook
-editor_options: 
-  chunk_output_type: console
+title: "oopsRBPs\n 01: Quality Control and Aggregation to Proteins"
+author: "Tom Smith, Veronica Dezi, Manasa Ramakrishna"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
 ---
 
-Here we take the peptide-level quantification from PD and perform some QC before aggregating to protein-level quantification
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+## 1. Introduction  
+This is a large experiment by Veronica testing the effects of Insulin deprivation and stimulation on MCF10A "normal" breast cells that are highly dependent on insulin for their growth. The experimental set up is shown below. As you can see, there are 5 replicates for each conditions. Set1 and Set 2 have been analysed in two 10-plex TMT experiments on the mass spectrometer. Here, we would like to assess the differences in RNA-binding proteins, if any, in (1) Insulin-starved and (2) Insulin-stimulated cells relative to their controls.  
 
-```{r, echo=FALSE}
-#suppressMessages(library(MSnbase))
-#suppressMessages(library(dplyr))
+In the following lines of code, we will:  
+ 1. Look the raw data  
+ 2. Filter data to remove those mapping to multiple proteins 
+ 3. Aggregate the data into protein-level quantification  
+ 4. Filter the data to remove contaminants  
+ 5. Normalise the data (if needed)  
+ 6. Perform QC checks 
+ 7. Look for differentially expressed RBPs across conditions
+ 8. Look for GO term enrichment in the differential RBPs
 
-#source("../../CamProt_R/OOPS_analysis.R", chdir=TRUE)
+![Experimental setup for MCF10A cells stimulated by/starved of Insulin](../MCF10A-Insulin-Experimental-Setup.png)
+***
+We start by installing and loading the libraries required for our analysis. Make sure you have downloaded the GitHub repository https://github.com/TomSmithCGAT/CamProt_R locally. Also make sure you are in the directory that contains the Rmd notebooks prior to running this code, otherwise program will not run. Raw data is in the folder "../raw", plots will be printed out to the folder "../plots" and results in the form of tables will be printed out to the folder "../results". Large annotation files necessary for GO term enrichment are in the folder "../shared_files". 
+
+```{r 00_Startup}
+
+# Libraries needed for analysis
+suppressMessages(library(MSnbase))
+suppressMessages(library(dplyr))
+
+# source file that contains useful functions for analysis
 source("../../CamProt_R/Utility.R", chdir=TRUE)
 
-```
-
-```{r}
+# Source file that contains a list of glycoproteins that have been identified in previous OOPS experiments. I'm not convinced about removing these proteins from the study at the ourset.
 glycoproteins <- read.table("../shared_files/glycoproteins.tsv", sep="\t", header=TRUE)
 glycoproteins <- glycoproteins %>% pull(protein) %>% as.character() %>% unique()
 ```
+A set of functions needed within this script.
+```{r 01_Functions}
 
-Read in the raw data
-## 1. Total Non-Stimulated vs Stimulated
-```{r, echo=FALSE}
-total_peptides_us_df <- parse_features("../raw/Vero_N_I_Total_PeptideGroups_reannot.txt",
-                                    master_protein_col='Master.Protein.Accessions',
-                                    protein_col='Master.Protein.Accessions')
+#--------------------------------------------------------
+# Function  : run_parse_features
+# Aim       : Function-to-parse-features-for-all-data
+#--------------------------------------------------------
 
-# remove glycoproteins
-total_peptides_us_noglyc_df <- total_peptides_us_df[!total_peptides_us_df$Master.Protein.Accessions %in% glycoproteins,]
-cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(total_peptides_us_noglyc_df))))
-cat(sprintf("\nThese peptides are associated with %s master proteins\n", 
-            length(unique(total_peptides_us_noglyc_df$Master.Protein.Accessions))))
-```
-## 2. RBP Non-Stimulated vs Stimulated
-```{r, echo=FALSE}
-rbp_peptides_us_df <- parse_features("../raw/Vero_N_I_RBP_PeptideGroups_reannot.txt",
-                                  master_protein_col='Master.Protein.Accessions',
-                                  protein_col='Master.Protein.Accessions')
+run_parse_features <- function(fname){
+  
+  df = parse_features(fname,master_protein_col='Master.Protein.Accessions',protein_col='Master.Protein.Accessions')
+  df_noglyc = df[!df$Master.Protein.Accessions %in% glycoproteins,]
+  
+  cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(df_noglyc))))
+  cat(sprintf("\nThese peptides are associated with %s master proteins\n", 
+              length(unique(df_noglyc$Master.Protein.Accessions))))
+  
+  return(list(df = df, df_noglyc = df_noglyc))
+}
 
-# remove glycoproteins
-rbp_peptides_us_noglyc_df <- rbp_peptides_us_df[!rbp_peptides_us_df$Master.Protein.Accessions %in% glycoproteins,]
-cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(rbp_peptides_us_noglyc_df))))
-cat(sprintf("\nThese peptides are associated with %s master proteins\n", 
-            length(unique(rbp_peptides_us_noglyc_df$Master.Protein.Accessions))))
+#----------------------------------------------------------------------------------
+# Function  : assess_rbp_tot_overlap
+# Aim       : quantify overlap between total protein and rbp (oops) experiments
+#----------------------------------------------------------------------------------
+assess_rbp_tot_overlap <- function(rbp_df, tot_df, suf){
+  print(paste("RBP master proteins also in total",suf,"=",length(intersect(unique(tot_df$Master.Protein.Accessions),
+                               unique(rbp_df$Master.Protein.Accessions))),sep=" "))
+  print(paste("RBP master proteins NOT in total",suf,"=",
+              length(setdiff(unique(rbp_df$Master.Protein.Accessions),
+                             unique(tot_df$Master.Protein.Accessions)))))
+  
+  print(paste("Percentage RBP master proteins in total",suf,"=",round(length(intersect(unique(tot_df$Master.Protein.Accessions),unique(rbp_df$Master.Protein.Accessions)))*100/length(unique(rbp_df$Master.Protein.Accessions)),2),"%"))
+}
 
-```
-## 3. Total Unstarved vs Starved
-```{r, echo=FALSE}
-total_peptides_us_df <- parse_features("../raw/Vero_U_S_Total_PeptideGroups_reannot.txt",
-                                    master_protein_col='Master.Protein.Accessions',
-                                    protein_col='Master.Protein.Accessions')
-
-# remove glycoproteins
-total_peptides_us_noglyc_df <- total_peptides_us_df[!total_peptides_us_df$Master.Protein.Accessions %in% glycoproteins,]
-cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(total_peptides_us_noglyc_df))))
-cat(sprintf("\nThese peptides are associated with %s master proteins\n", 
-            length(unique(total_peptides_us_noglyc_df$Master.Protein.Accessions))))
-```
-## 4. RBP Unstarved vs Starved
-```{r, echo=FALSE}
-rbp_peptides_us_df <- parse_features("../raw/Vero_U_S_RBP_PeptideGroups_reannot.txt",
-                                  master_protein_col='Master.Protein.Accessions',
-                                  protein_col='Master.Protein.Accessions')
-
-# remove glycoproteins
-rbp_peptides_us_noglyc_df <- rbp_peptides_us_df[!rbp_peptides_us_df$Master.Protein.Accessions %in% glycoproteins,]
-cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(rbp_peptides_us_noglyc_df))))
-cat(sprintf("\nThese peptides are associated with %s master proteins\n", 
-            length(unique(rbp_peptides_us_noglyc_df$Master.Protein.Accessions))))
+#----------------------------------------------------------------------------------
+# Function  : summariseMissing
+# Aim       : print tally of missing values for each study across all peptides/prots
+#----------------------------------------------------------------------------------
+summariseMissing <- function(res){
+  cat("\ntallies for missing data (# samples with missing)")
+  print(table(rowSums(is.na(as.data.frame(exprs(res))))))
+}
 
 ```
-Summarise the numbber of RBPs and Total proteins in each set of experiments
-## 1. Non-Stimulated vs Stimulated
-```{r}
+## 2. Read in the peptide-level quantification  
+What we obtain following a mass spectrometer run is peptide-level quantification from Proteome Discoverer(PD). Here we perform some Quality Control checks before aggregating data to protein-level quantification. 
 
-cat(sprintf("\n # RBP master proteins also in total: %s\n",
-            length(intersect(unique(total_peptides_us_df$Master.Protein.Accessions),
-                             unique(rbp_peptides_us_df$Master.Protein.Accessions)))))
-cat(sprintf("\n # RBP master proteins NOT in total: %s \n",
-            length(setdiff(unique(rbp_peptides_us_df$Master.Protein.Accessions),
-                           unique(total_peptides_us_df$Master.Protein.Accessions)))))
+As discussed before, there are 2 sets of experiments that need to be analysed :  
+a. Non-Insulin Stimulated (4hr-Starved) vs Insulin Stimulated (30min.Insulin) MCF10A cells
+b. Unstarved vs Starved (4hr-Starved) MCF10A cells  
 
-cat(sprintf("\n Percentage RBP master proteins in total: %s \n",round(print(length(intersect(unique(total_peptides_us_df$Master.Protein.Accessions),
-                       unique(rbp_peptides_us_df$Master.Protein.Accessions)))*100/
-        length(unique(rbp_peptides_us_df$Master.Protein.Accessions))),2)))
+The function 'parse_features' reads in a peptide-level data file and processes it remove any contaminants, peptides missing a protein assignment and those that are missing quantification values (details in 'Utility.R'). 
 
-```
-## 2. Unstarved vs Starved
-```{r}
+```{r 02_Peptide-level-quantification}
+# Parsing input files
+files = grep("reannot",list.files("../raw",full.names = T),value=T)
+suff = gsub("_reannot.txt|_peptides","",sapply(strsplit(files,"/"),"[[",3))
 
-cat(sprintf("\n # RBP master proteins also in total: %s\n",
-            length(intersect(unique(total_peptides_us_df$Master.Protein.Accessions),
-                             unique(rbp_peptides_us_df$Master.Protein.Accessions)))))
-cat(sprintf("\n # RBP master proteins NOT in total: %s \n",
-            length(setdiff(unique(rbp_peptides_us_df$Master.Protein.Accessions),
-                           unique(total_peptides_us_df$Master.Protein.Accessions)))))
+# Process all experimental data
+for(f in 1:length(files)){
+  print(toupper(suff[f])) 
+  r = run_parse_features(files[f])
+  assign(paste(suff[f],"df",sep="_"),r$df)
+  assign(paste(suff[f],"df_noglyc",sep="_"),r$df_noglyc)
+}
 
-cat(sprintf("\n Percentage RBP master proteins in total: %s \n",round(print(length(intersect(unique(total_peptides_us_df$Master.Protein.Accessions),
-                       unique(rbp_peptides_us_df$Master.Protein.Accessions)))*100/
-        length(unique(rbp_peptides_us_df$Master.Protein.Accessions))),2)))
+# List objects that have been created
+grep("df",ls(),value=T)
 
+# Summarise the number of RBPs and Total proteins in each set of experiments
+
+# 1. Non-insulin (4hr-Starved) vs Insulin Stimulated (30min-Insulin)
+assess_rbp_tot_overlap(rbp_ni_df, total_ni_df, "N-vs-I")
+
+# 2. Unstarved vs Starved (4hr-Starved)
+assess_rbp_tot_overlap(rbp_us_df, total_us_df, "U-vs-S")
 ```
 In the Non-Stimulated vs Insulin Stimulated experiments, nearly 80% of RBPs are also in the total samples. In the Unstarved vs Starved experiments, only about 70% of RBPs are also in the total samples. 
 
 For most of the RBPs we will also have information regarding the changes in the total abundance for the protein, regardless of the abundance of the RNA-bound fraction. However, for 20-30% of them, we won't. 
 
-Let's start aggregating the quantification.
+Let's start aggregating the quantification.First we create the dataframes to make an MSnSet object...
 
-First we create the dataframes to make an MSnSet object...
-```{r}
-summariseMissing <- function(res){
-cat("\ntallies for missing data (# samples with missing)")
-print(table(rowSums(is.na(as.data.frame(exprs(res))))))
-}
+```{r 03_Creating-an-MSnSet-from-data}
 
-samples_ni_inf <- "../raw/samples_N_I.tsv"
-samples_us_inf <- "../raw/samples_U_S.tsv"
+# Read in experimental set-up data
+samples_ni_inf <- "../raw/samples_ni.tsv"
+samples_us_inf <- "../raw/samples_us.tsv"
 
-total_ni_res <- makeMSNSet(total_peptides_ni_df, samples_ni_inf)
-rbp_ni_res <- makeMSNSet(rbp_peptides_ni_df, samples_ni_inf)
+total_ni_res <- makeMSNSet(total_ni_df, samples_ni_inf)
+rbp_ni_res <- makeMSNSet(rbp_ni_df, samples_ni_inf)
 
-total_us_res <- makeMSNSet(total_peptides_us_df, samples_us_inf)
-rbp_us_res <- makeMSNSet(rbp_peptides_us_df, samples_us_inf)
-```
-Let's check the relative quantification across the labels
+total_us_res <- makeMSNSet(total_us_df, samples_us_inf)
+rbp_us_res <- makeMSNSet(rbp_us_df, samples_us_inf)
 
-```{r}
+# Check relative quantificationd data
 p <- plotLabelQuant(total_ni_res, log=T)
 p <- plotLabelQuant(rbp_ni_res, log=T)
 p <- plotLabelQuant(total_us_res, log=T)
 p <- plotLabelQuant(rbp_us_res, log=T)
 ```
 For the Total N_I experiment, 4hr-Starved_1 seems to be sticking out. For the Total & RBP U_S experiment, 4hr-Starved_4 seems to be sticking out. 
-
-```{r, echo=F, eval=F}
-# Remove all values below 99th percentile of empty tag ("126") and all values for the empty tag
-filterLowIntensity <- function(res){
-  empty_tag_values <- exprs(res)[,"126"]
-  empty_tag_values <- empty_tag_values[is.finite(empty_tag_values)]
-  threshold <- quantile(empty_tag_values, 0.99)
-  print(threshold)
-  exprs(res)[exprs(res)<threshold]<-NA
-  res <- res[,2:10] # remove the Empty tag entirely!
-  invisible(res)
-}
-```
-
-```{r, echo=F, eval=F}
-total_res <- filterLowIntensity(total_res)
-rbp_res <- filterLowIntensity(rbp_res)
-
-p <- plotLabelQuant(total_res, log=T)
-p <- plotLabelQuant(rbp_res, log=T)
-```
 
 Aggregate over the peptides with the same sequence but different modifications. Don't worry about the errors. Missing values are correctly handled here.
 ```{r}
