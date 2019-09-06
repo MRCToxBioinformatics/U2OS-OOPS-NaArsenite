@@ -1,39 +1,218 @@
 ---
-title: "Changes in RNA binding"
-output: html_notebook
+title: "03: Changes in RNA Binding"
+author: "Tom Smith, Veronica Dezi, Manasa Ramakrishna"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
-```{r 00_Setup}
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+## 1. Introduction  
+
+In this section of the code, we are finally doing the interesting analysis which is finding out if there are any RBPs that are differentially expressed between conditions. Having looked at the data thus far, the extreme variability of the RBP Unstarved vs Starved samples might mean that we cannot really do a differential analysis with that set. However, we'll give it a go and see what happen. 
+
+```{r 00_Reading-in-utility-function, eval=T, echo=F}
+
 source("../../CamProt_R/Utility.R")
 
 library(plyr)
 library(dplyr)
+library(tidyverse)
+library(limma)
+library(biobroom)
+library(Hmisc)
+library(MSnbase)
+
+# set up standardised plotting scheme
+theme_set(theme_bw(base_size = 20) +
+            theme(panel.grid.major=element_blank(),
+                  panel.grid.minor=element_blank(),
+                  aspect.ratio=1))
+
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
 ```
 
-```{r 01_Reading-in-data}
+```{r 01_Functions-for-analysis, eval=T, echo=F}
 
-total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm")
-oops_ni_protein_quant <- readRDS("../results/rbp_ni_res_pro_agg_norm")
+# A set of functions needed within this script.
 
-total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm")
-oops_us_protein_quant <- readRDS("../results/rbp_us_res_pro_agg_norm")
+#-----------------------------------------------------------------
+# Function  : make_design_matrix
+# Aim       : make a design matrix from a sample data file
+# Input     : data frame that contains a column called "Condition"
+#------------------------------------------------------------------
 
-```
+# Design matrix for various comparisons
+make_design_matrix<-function(setup){
+  des = model.matrix(~setup$Condition)
+  rownames(des) = rownames(setup)
+  colnames(des) = gsub("setup\\$Condition","",colnames(des))
+  print(des)
+}
 
-```{r 02_Intersecting-proteins}
-intersecting_ni_proteins <- intersect(rownames(total_ni_protein_quant), rownames(oops_ni_protein_quant))
-print(paste("Number of RBPs also captured in the Total Proteome for Non-Insulin vs Insulin-treated samples is", length(intersecting_ni_proteins)),sep="")
+#-----------------------------------------------------------------
+# Function  : my_volcano_plot
+# Aim       : make a volcano plot from topTable object 
+# Input     : data frame that contains a column called "Condition"
+#------------------------------------------------------------------
+my_volcanoplot <- function(topTableResults){
+  p <- topTableResults %>%
+    mutate(sig=ifelse(adj.P.Val<0.05, "sig.", "not sig.")) %>% # add "sig" column
+    ggplot(aes(logFC, -log10(P.Value), colour=sig)) +
+    geom_point(size=0.25) +
+    scale_colour_manual(values=c("black", cbPalette[6]), name="") # manually adjust colours
+  
+  return(p)
+}
 
-intersecting_us_proteins <- intersect(rownames(total_us_protein_quant), rownames(oops_us_protein_quant))
-print(paste("Number of RBPs also captured in the Total Proteome for Unstarved vs Starved samples is", length(intersecting_us_proteins)),sep="")
+#-----------------------------------------------------------------
+# Function  : combine_esets
+# Aim       : combine Total and RBP datasets for limma analysis 
+# Input     : Two MSnSets - one for Total Proteome and one for OOPS
+# Output    : One combined MSnSet
+#------------------------------------------------------------------
+combine_esets <- function(total,rbp){
 
-```
+  # make the column names for the two MSnSets unique
+  colnames(total) <- paste0(colnames(total), "_Total")
+  colnames(rbp) <- paste0(colnames(rbp), "_OOPS")
+  
+  # make the ExpressionSet
+  combined_intensities <- ExpressionSet(cbind(exprs(total), exprs(rbp)))
+  
+  # Add the feature data
+  fData(combined_intensities) <- fData(total)
+  
+  # Add the phenotype data
+  pData(combined_intensities) <- rbind(pData(total), pData(rbp))
+  pData(combined_intensities)$Condition <- factor(sapply(strsplit(pData(combined_intensities)$Sample_name,"_"),"[[",1))
+  pData(combined_intensities)$Type <- factor(sapply(strsplit(rownames(pData(combined_intensities)),"_"),"[[",2),level=c("Total","OOPS"))
+  
+  return(combined_intensities)
+}
 
-Below, we create the `data.frame` which will hold the expression values for all samples
-```{r 03_Combining-total-RBP-data}
 
+#------------------------------------------------------------------------------
+# Function  : modify_output
+# Aim       : modify output from TopTable to just keep informative columns
+# Input     : output from 'run_limma'
+# Output    : simplified data frame with results of linear modelling
+#-------------------------------------------------------------------------------
+modify_output <- function(rbps_de,cols=c(14:15,67,82:89)){
+  rbps_mod = rbps_de[,cols]
+  rbps_mod$protein_desc = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"OS="),"[[",1)
+  rbps_mod$gene_name = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
+  colnames(rbps_mod)[1] = "uniprot_id"
+  rbps_mod = rbps_mod[,c(1,13,12,3:11)]
+  return(rbps_mod)
+}
+
+#------------------------------------------------------------------------------
+# Function  : run_limma
+# Aim       : Runs limma on combined OOPS and Total protein data
+# Input     : Combined dataset from section 4b and coefficient of interest
+# Output    : limma results
+#-------------------------------------------------------------------------------
+
+run_limma <- function(combined_intensities,coeff){
+  
+  condition <- combined_intensities$Condition
+  type <- combined_intensities$Type
+  sample_name <- combined_intensities$Sample_name
+  
+  # limma design matrix
+  design <- model.matrix(~0+condition*type) 
+  
+  # Fit a linear model 
+  rna_binding_fit <- lmFit(combined_intensities, design)
+  
+  # Draw contrasts
+  rna_binding_fit <- contrasts.fit(rna_binding_fit, coefficients=coeff)
+  
+  # Compute moderated statistics and log odds of DE using empirical bayes moderation
+  rna_binding_fit <- eBayes(rna_binding_fit, trend=TRUE, robust=TRUE)
+  
+  # Look at the data
+  plotSA(rna_binding_fit)
+  
+  # Plotting significance
+  rna_binding_p_value_status <- ifelse(rna_binding_fit$p.value[,coeff]<0.05, "sig", "not_sig")
+  limma::plotMA(rna_binding_fit, status=rna_binding_p_value_status, values=c("sig", "not_sig"),
+                col=c("magenta", "black"), cex=c(0.8,0.2), main="")
+  
+  # Count DE proteins
+  summary(decideTests(rna_binding_fit, p.value=0.05, adjust.method="BH"))
+  
+  # Volcano plot of all results
+  all_rna_binding_results <- topTable(rna_binding_fit, coef = coeff, n = Inf, confint=TRUE)
+  my_volcanoplot(all_rna_binding_results)
+  
+  # Return all results
+  return(all_rna_binding_results)
+
+}
+
+#------------------------------------------------------------------------------
+# Function  : simple_limma
+# Aim       : Runs limma on a single dataset - oops or total protein
+# Input     : MSnSet, design matrix and coefficient of interest
+# Output    : limma results
+#-------------------------------------------------------------------------------
+
+simple_limma <- function(protein_quant,des,coeff){
+  
+  # fit linear model to each protein
+  total_fit_lm <- lmFit(exprs(protein_quant), des)
+  
+  # extract results for coefficient of interest
+  total_fit_lm_c <- contrasts.fit(total_fit_lm, coefficients=coeff)
+  
+  # Relationship between mean and variance
+  # As expected, there is a relationship between mean intensity and variance, although this is almost all limited to the very low intensity values having high variance. 
+  #plotSA(total_fit_lm_c)
+  
+  # Below, we perform the emperical Bayesian shrinking of the std errors towards the trend (`trend=TRUE`). We will also use the `robust=TRUE` option to ensure that the outliers don't affect the trend estimation.
+
+  # shrink std errors to abundance vs. stdev trend
+  total_fit_lm_e_c <- eBayes(total_fit_lm_c, trend=TRUE, robust=TRUE)
+  #plotSA(total_fit_lm_e_c)
+  
+  # Identify significant changes
+  # Below, we plot the average intensity vs log change. This is a useful QC plot to show that nothing odd has happened with our linear modeling.
+  p_value_status <- ifelse(total_fit_lm_e_c$p.value[,coeff]<0.05, "sig", "not_sig")
+  
+  # plot
+  limma::plotMA(total_fit_lm_e_c, status=p_value_status,col=c("magenta", "black"), cex=c(0.8,0.1), main="")
+  
+  # Count DE proteins
+  summary(decideTests(total_fit_lm_e_c, p.value=0.05, adjust.method="BH"))
+  
+  # Note that most of these changes are relatively slight (<2-fold)
+  # Extract all results from limma (n=Inf)
+  all_results <- topTable(total_fit_lm_e_c, coef = coeff, n = Inf)
+  
+  # we'll make a coupld of volcano plots so easier to wrap this up into a function
+  my_volcanoplot(all_results)
+  
+  return(all_results)
+}
+
+#------------------------------------------------------------------------------
+# Function  : makeLongExprs
+# Aim       : Convert an expression matrix into the long form for plotting
+# Input     : MSnSet, list of proteins
+# Output    : Long form of expression data with variables in columns 
+#-------------------------------------------------------------------------------
 makeLongExprs <- function(obj, intersecting_proteins){
   
   obj_exprs <- exprs(obj[intersecting_proteins,])
@@ -48,6 +227,175 @@ makeLongExprs <- function(obj, intersecting_proteins){
   return(long_exprs)
 }
 
+#------------------------------------------------------------------------------
+# Function  : plotTop10
+# Aim       : Plots Total vs RBP trend plots for a set of proteins
+# Input     : 
+#       combined_exprs : combined total and rbp expression in long form, 
+#       lowest_p_proteins : list of proteins, ideally with smallest p-value
+#       suf : Suffix used in the title of plots explaining which experiment it is
+# Output    : Long form of expression data with variables in columns 
+#-------------------------------------------------------------------------------
+plotTop10<-function(combined_exprs,lowest_p_proteins,suf){
+  test_df<- combined_exprs %>% 
+            filter(UniprotID %in% lowest_p_proteins) %>%
+            arrange(UniprotID, Condition, Type)
+  test_df$Type = factor(test_df$Type,levels = c("RBPS","Total"))
+  
+  
+  test_df %>%
+    ggplot(aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(~Entry.name*Type, ncol=4, scales = "free_y") +
+    xlab("") +
+    ylab("Protein abundance (log2)") +
+    theme(text=element_text(size=12),legend.position="bottom",axis.text.x = element_text(size=10),title = element_text(vjust = 1,hjust=0.5,size=12))+labs(title=suf)
+  
+}
+
+```
+## 2. Reading in normalised, outlier-free data
+
+We start by reading in the normalised data minus samples with really small MADs. From a starting point of 20 samples, we are now down to 16. 
+```{r 02_Reading-in-data}
+
+total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm_nododgey.rds")
+oops_ni_protein_quant <- readRDS("../results/rbp_ni_res_pro_agg_norm_nododgey.rds")
+
+total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm_nododgey.rds")
+oops_us_protein_quant <- readRDS("../results/rbp_us_res_pro_agg_norm_nododgey.rds")
+
+```
+
+## 3. LIMMA for differential protein expression analysis
+LIMMA stands for Linear Models for Microarray and RNA-Seq Data and is a package used for the analysis of gene expression data from microarrays or RNAseq experiments. It's major selling point is that it is able to use linear models to assess differential expression in the context of multifactor designed experiments. Rather usefully, limma does distinguish data to be "from proteins" or "from RNA" which makes it quite handy to apply to Proteomics data.There are a few steps to DE analysis by limma.  
+1. Create a data matrix with samples in columns and proteins in rows. We can use the "exprs" slot in an MSnSet for this. 
+2. Create a design matrix that tells limma about samples, conditions and replicates. We can use the `pData` from MSnSet for this.  
+3. Fit a linear model to the data(1) using the design(2).  
+4. Define contrasts of interest i.e which gruops of samples you want to test for differential protein expression.    
+5. Extract results for the contrast of interest.  
+6. Look at the top proteins.  
+
+Initially, we perform this analysis for each of the 4 datasets separately.
+
+### 3a. The Design matrix
+
+Given we've removed various samples from each of the experiments, we need different design matrices for each of them. 
+
+```{r 3a_Design-matrix-setup}
+
+# Extract information from the pData slot and make it suitable for design matrix formation
+
+# NI_Total
+setup_ni_tot = data.frame(cbind(Condition = sapply(strsplit(pData(total_ni_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(total_ni_protein_quant)$Sample_name,"_"),"[[",2)))
+rownames(setup_ni_tot) = rownames(pData(total_ni_protein_quant))
+setup_ni_tot$Condition = factor(setup_ni_tot$Condition,levels=c("4hr-Starved","30min-Insulin"))
+
+# NI_RBP
+setup_ni_rbp = data.frame(cbind(Condition = sapply(strsplit(pData(oops_ni_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(oops_ni_protein_quant)$Sample_name,"_"),"[[",2)))
+rownames(setup_ni_rbp) = rownames(pData(oops_ni_protein_quant))
+setup_ni_rbp$Condition = factor(setup_ni_rbp$Condition,levels=c("4hr-Starved","30min-Insulin"))
+
+# US_Total
+setup_us_tot = data.frame(cbind(Condition = sapply(strsplit(pData(total_us_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(total_us_protein_quant)$Sample_name,"_"),"[[",2)))
+rownames(setup_us_tot) = rownames(pData(total_us_protein_quant))
+setup_us_tot$Condition = factor(setup_us_tot$Condition,levels=c("Unstarved","4hr-Starved"))
+
+# US_RBP
+setup_us_rbp = data.frame(cbind(Condition = sapply(strsplit(pData(oops_us_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(oops_us_protein_quant)$Sample_name,"_"),"[[",2)))
+rownames(setup_us_rbp) = rownames(pData(oops_us_protein_quant))
+setup_us_rbp$Condition = factor(setup_us_rbp$Condition,levels=c("Unstarved","4hr-Starved"))
+
+# Create-design-matrix
+
+des_ni_tot <- make_design_matrix(setup_ni_tot)
+des_ni_rbp <- make_design_matrix(setup_ni_rbp)
+
+des_us_tot <- make_design_matrix(setup_us_tot)
+des_us_rbp <- make_design_matrix(setup_us_rbp)
+
+```
+
+### 3b. Linear model and contrasts
+
+Below we run limma to idenify the proteins with a significant change in abundance between conditions, one experiment at a time using the function 'simple_limma'. Only 6 RNA binding-proteins were significantly DE and in the 4hr-Starved samples relative to the Unstarved samples. Since the US RBP experiment had extremely variable data, I wouldn't be confident in pursuing any of these any further. 
+
+```{r 3b_Fit-a-linear-model-extract-contrasts}
+
+lm_tot_ni <- simple_limma(total_ni_protein_quant,des_ni_tot,"30min-Insulin")
+lm_rbp_ni <- simple_limma(oops_ni_protein_quant,des_ni_rbp,"30min-Insulin")
+
+lm_tot_us <- simple_limma(total_us_protein_quant,des_us_tot,"4hr-Starved")
+lm_rbp_us <- simple_limma(oops_us_protein_quant,des_us_rbp,"4hr-Starved")
+
+lm_rbp_us_mod <- cbind(fData(oops_us_protein_quant)[rownames(head(lm_rbp_us)),],head(lm_rbp_us))
+lm_rbp_us_mod <- lm_rbp_us_mod[,c(14:15,67,82:87)]
+lm_rbp_us_mod$protein_desc = sapply(strsplit(lm_rbp_us_mod$Master.Protein.Descriptions,"OS="),"[[",1)
+lm_rbp_us_mod$gene_name = sapply(strsplit(lm_rbp_us_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
+colnames(lm_rbp_us_mod)[1] = "uniprot_id"
+lm_rbp_us_mod = lm_rbp_us_mod[,c(1,11,10,4:9)]
+
+# Write results to table
+write.table(lm_tot_ni,row.names=T,quote=F, file="../results/Untreated_vs_Insulin_ALL_Total-protein_changes.tsv")
+write.table(lm_rbp_ni,row.names=T,quote=F, file="../results/Untreated_vs_Insulin_ALL_RNA_binding_changes.tsv")
+
+write.table(lm_tot_us,row.names=T,quote=F, file="../results/Unstarved_vs_Starved_ALL_Total-protein_changes.tsv")
+write.table(lm_rbp_us,row.names=T,quote=F, file="../results/Unstarved_vs_Starved_ALL_RNA_binding_changes.tsv")
+write.table(lm_rbp_us_mod,row.names=F,quote=F, file="../results/Unstarved_vs_Starved_SIGNIF_RNA_binding_changes.tsv")
+```
+
+## 4. An alternate approach - combining total and RBP data
+OK, so it's easy to perform the pairwise comparison. What about changes in RNA binding? For this, we need combine the two MSnSets into a single ExpressionSet. We start by intersecting proteins within the NI or US experiments so we can compare just those proteins that are captures across both total and RBP datasets. 
+
+```{r 4a_Intersecting-proteins}
+
+intersecting_ni_proteins <- intersect(rownames(total_ni_protein_quant), rownames(oops_ni_protein_quant))
+print(paste("Number of RBPs also captured in the Total Proteome for Non-Insulin vs Insulin-treated samples is", length(intersecting_ni_proteins)),sep="")
+
+intersecting_us_proteins <- intersect(rownames(total_us_protein_quant), rownames(oops_us_protein_quant))
+print(paste("Number of RBPs also captured in the Total Proteome for Unstarved vs Starved samples is", length(intersecting_us_proteins)),sep="")
+
+# Subset of intersecting NI proteins only
+total_ni_for_combination <- total_ni_protein_quant[intersecting_ni_proteins,]
+rbp_ni_for_combination <- oops_ni_protein_quant[intersecting_ni_proteins,]
+
+# Subset of intersecting US proteins only
+total_us_for_combination <- total_us_protein_quant[intersecting_us_proteins,]
+rbp_us_for_combination <- oops_us_protein_quant[intersecting_us_proteins,]
+```
+
+```{r 4b_Combining-expression-data}
+
+combined_ni_intensities = combine_esets(total_ni_for_combination,rbp_ni_for_combination)
+pData(combined_ni_intensities)$Condition = factor(pData(combined_ni_intensities)$Condition,levels = c("4hr-Starved","30min-Insulin"))
+
+combined_us_intensities = combine_esets(total_us_for_combination,rbp_us_for_combination)
+pData(combined_us_intensities)$Condition = factor(pData(combined_us_intensities)$Condition,levels = c("Unstarved","4hr-Starved"))
+
+```
+
+The we run `limma` on the combined intensities and this time test for a signficant interaction coefficient
+
+```{r 4c_Limma-on-combined-data}
+
+# N_I
+ni_rbps_de = run_limma(combined_ni_intensities,"condition30min-Insulin:typeOOPS")
+ni_rbps_de_mod = modify_output(ni_rbps_de)
+ni_rbps_p_value <- ni_rbps_de_mod %>% filter(P.Value <= 0.05) 
+write_csv(ni_rbps_p_value, path = "../results/Non-Insulin-vs-Insulin-Treated-rawp-le-0.05.csv")
+
+# U_S
+us_rbps_de = run_limma(combined_us_intensities,"condition4hr-Starved:typeOOPS")
+us_rbps_de_mod = modify_output(us_rbps_de)
+us_rbps_p_value <- us_rbps_de_mod %>% filter(P.Value <= 0.05) 
+write_csv(us_rbps_p_value, path = "../results/Unstarved-vs-Starved-rawp-le-0.05.csv")
+```
+## 5. Plotting expression of Top 10 proteins across studies
+This is to see whether we have a reason for not spotting any DE proteins. Looking at the plots, it is pretty clear that the differences between treatments is pretty minimal i.e the trend lines are not very extreme and only in a few cases are the trend lines really varied between Total proteome and RBP-ome. Given this, I'm not surprised that we don't find many DE genes. To me, it would seem that either (1) the effect of the treatment isn't as strong as we'd hoped for or (2) Something BAAAD happened on the mass spectrometer. 
+
+```{r 5_Plotting-expression-data-per-protein}
+
 # Combining Total and RBP data : NI
 total_ni_exprs <- makeLongExprs(total_ni_protein_quant,intersecting_ni_proteins)
 oops_ni_exprs <- makeLongExprs(oops_ni_protein_quant,intersecting_ni_proteins)
@@ -59,243 +407,24 @@ combined_ni_exprs$Condition <- factor(combined_ni_exprs$Condition, levels=c("X4h
 total_us_exprs <- makeLongExprs(total_us_protein_quant,intersecting_us_proteins)
 oops_us_exprs <- makeLongExprs(oops_us_protein_quant,intersecting_us_proteins)
 combined_us_exprs <- rbind(cbind(total_us_exprs,Type="Total"), cbind(oops_us_exprs,Type="RBPS"))
-combined_us_exprs$Condition <- factor(combined_us_exprs$Condition, levels=c("Unstarved", "X4h.Starved"))
-```
+combined_us_exprs$Condition <- factor(combined_us_exprs$Condition, levels=c("Unstarved", "X4hr.Starved"))
 
-```{r 04_Adding-Uniprot-annotations-to-protein}
+# Adding protein information
 protein_info <- read.delim("../shared_files/human_protein_ids_plus_gene_names.tsv")
 combined_ni_exprs <- combined_ni_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
+combined_ni_exprs$Condition = gsub("X4hr.|X30min.","",combined_ni_exprs$Condition)
+combined_ni_exprs$Condition = factor(combined_ni_exprs$Condition,levels=c("Starved","Insulin"))
 combined_us_exprs <- combined_us_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
+combined_us_exprs$Condition = gsub("X4hr.|X30min.","",combined_us_exprs$Condition)
+combined_us_exprs$Condition = factor(combined_us_exprs$Condition,levels=c("Unstarved","Starved"))
 
-print(head(combined_ni_exprs))
-print(head(combined_us_exprs))
-```
-
-## Linear model for protein intensity
-```{r 05_Testing-terms-in-a-linear-model}
-
-# Condition, Type and Replicate
-fit <- combined_ni_exprs %>% filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
-  lm(formula=Intensity~Condition*Type+Replicate)
-print(summary(fit))
-
-# Condition and Type only
-fit2 <- combined_ni_exprs %>% filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
-  lm(formula=Intensity~Condition*Type)
-
-print(summary(fit2))
-```
-Now we model the protein intensity according to the model described in `dummy_example_vd.Rmd`. As an example, let's see the results from just applying the model to the first UniprotID (A0AVT1) in the Non Insulin-treated vs Insulin-Stimulated comparison. We can see that the model fits the data well ("Multiple R-squared:  0.9674,	Adjusted R-squared:  0.9484"). This is not really a great suprise since we've used all the known coefficients (Condition, Type and Replicate) to model the Intensity. 
-
-Note: MR, 2/9/2019 - shouldn't it be ConditionUntreated:TypeRBPs ? We can see that the interaction term that we're interested in (for changes in RNA binding) does not significantly deviate from zero (ConditionX30min.Insulin:TypeRBPS  Estimate=-.14031, Std. Error=0.10129,   t-statistic=-1.385,  p-value=0.191).
-
-Then, we model the same protein but without including the replicate. This is akin to assuming there is no difference between the replicate experiments, e.g no batch effect. Note that the estimates for the coefficients are the same but the "Std. Errors" are slightly smaller since we are including fewer available covariates in the model. Hence, our power to detect significant changes is higher. Also, note that the amount of variance explained by the model is nearly the same (Multiple R-squared:  0.9546,	Adjusted R-squared:  0.946) and the adjusted R-squared is greater. This indicates that the first model with more covariates is just about actually preferable as the additional covariate ("Replicate") does help model the dependent variable ("Intensity"). 
-
-However, there is still no significant change in RNA binding.
-
-We can formally compare two models using the [Akaike information criterion](https://en.wikipedia.org/wiki/Akaike_information_criterion). AIC measures the "goodness of fit" but with penalises models which use too many parameters to reach the goodness of fit. This is similiar to the adjusted R-Squared above. Lower AIC indicates a "better" model.
-
-So, for our full set of proteins, we will try both models and take the one with the lowest AIC and keep track of how many proteins were modeled including the "Replicate" covariate. 
-
-```{r 06_AIC-to-determine-which-model-is-better}
-testModels <- function(obj, coeff_of_interest="ConditionX30min.Insulin:TypeRBPS"){
-  
-  fit1 <- obj %>% lm(formula=Intensity~Condition*Type+Replicate)
-  fit2 <- obj %>% lm(formula=Intensity~Condition*Type)
-  
-  if ( AIC(fit1) < AIC(fit2) ) {
-    chosen_fit <- fit1
-    fit_name <- "With_replicate"
-  } else {
-    chosen_fit <- fit2
-    fit_name <- "Without_replicate"
-  }
-
-  fit_values <- c(coef(summary(chosen_fit))[coeff_of_interest,],
-                  summary(chosen_fit)$adj.r.squared,
-                  fit_name)
-  names(fit_values)[4:6] <- c("p_value", "adj_R_squared", "fit")
-  return(fit_values)
-}
-
-# Running tests on a single protein
-fit_values <- combined_ni_exprs %>% 
-  filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
-  testModels()
-
-print(fit_values)
-```
-
-Below, we make a function to run the linear models on each protein in turn
-
-```{r 07_Modelling-the-entire-dataset}
-
-runLM <- function(obj, coeff_of_interest){
-   results <- obj %>%
-              ddply("UniprotID", function(x) testModels(x, coeff_of_interest))
-  
-  for(column in c("Estimate", "Std. Error", "t value", "adj_R_squared", "p_value")){
-    results[[column]] <- as.numeric(results[[column]])
-  }
-   
-  results$BH <- p.adjust(results$p_value, method="BH")
-  
-  # Merge in the protein names etc
-  results <- results %>% merge(protein_info, by.x="UniprotID", by.y="Entry", all.x=TRUE)
-  
-  # Return results
-  return(results)
-   
-}
-
-# Run LM for Untreated vs Insulin Treated
-Untreated_vs_Insulin <- combined_ni_exprs %>% 
-                        filter(Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
-                        runLM("ConditionX30min.Insulin:TypeRBPS") %>% 
-                        arrange(BH)
-
-
-# Run LM for Unstarved vs Insulin-Starved
-Unstarved_vs_Starved <- combined_us_exprs %>% 
-                        filter(Condition %in% c("Unstarved","X4h.Starved")) %>%
-                        runLM("ConditionX4h.Starved:TypeRBPS") %>% 
-                        arrange(BH)
-
-# Write data to file for later use
-write.table(Untreated_vs_Insulin, "../results/Untreated_vs_Insulin_RNA_binding_changes.tsv", sep="\t", quote=FALSE, row.names=FALSE)
-write.table(Unstarved_vs_Starved, "../results/Unstarved_vs_Starved_RNA_binding_changes.tsv", sep="\t", quote=FALSE, row.names=FALSE)
-```
-
-Below, we plot the p-values. Under the null hypothesis they should show an approximately uniform distribution. If there were a large number of proteins with a significant change in RNA binding, we would expect an additional "spike" with very low p-value (<0.01). We see am approximately uniform distribution but with a skew towards low p-value. This may indicate the presence of changes in RNA binding but which we are insufficiently powered to detect, e.g low p-value but not significant low p-value.
-
-```{r 08_Plotting-p-values}
-
-plotP <- function(obj){
-  p <- ggplot(obj, aes(p_value)) + geom_histogram(bins=40) + my_theme
-  print(p)
-}
-
-plotP(Untreated_vs_Insulin)
-plotP(Unstarved_vs_Starved)
-
-```
-Below, we tabulate the results. We will use the standard Benjamini-Hochberg method to adjust p-values for the multiple tests we have conducted here (1354 proteins). 
-
-```{r 09_Significant-proteins-in-study}
-
-summariseSignificantChanges <- function(obj){
-  cat("Which fit was best?")
-  print(table(obj$fit))
-  
-  cat("\nHow many p-values < 0.01 per fit 'type'?")
-  print(table(obj$fit, obj$p_value<0.01))
-  
-  cat("\nHow many significant changes in RNA binding (1% FDR)?")
-  print(table(ifelse(obj$BH<0.01, "Sig.", "Not Sig."), ifelse(obj$Estimate>0, "Up", "Down")))
-
-}
-
-summariseSignificantChanges(Untreated_vs_Insulin)
-summariseSignificantChanges(Unstarved_vs_Starved)
-```
-
-So, we don't detect any significant changes in RNA binding (@ 1% FDR) between Untreated and Insulin treated conditions. Similarly for Starved vs Unstarved conditions. 
-
-Let's just do a sanity check. We'll take the top 10 proteins with the lowest p-value for the Starved vs Insulin comparison and plot their intensity values
-
-```{r, 10_Top-10-proteins, fig.height=10, fig.width=10}
-
-plotTop10<-function(combined_exprs,lowest_p_proteins){
-  test_df<- combined_exprs %>% 
-            filter(UniprotID %in% lowest_p_proteins) %>%
-            mutate(facet=interaction(factor(gsub("_HUMAN","",Entry.name.x)), Type)) %>%
-            arrange(UniprotID, Condition, Type)
-  
-  test_df$facet <- factor(test_df$facet, levels=unique(test_df$facet))
-  
-  test_df %>%
-    ggplot(aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
-    geom_point() +
-    geom_line() +
-    facet_wrap(~facet, scales="free",  ncol=4) +
-    my_theme +
-    xlab("") +
-    ylab("Protein abundance (log2)") +
-    theme(text=element_text(size=10),
-          aspect.ratio=0.33)
-}
+#print(head(combined_ni_exprs))
+#print(head(combined_us_exprs))
 
 # Data
-lowest_p_ni_proteins <- Untreated_vs_Insulin %>% arrange(p_value) %>% pull(UniprotID) %>% head(10)
-lowest_p_us_proteins <- Unstarved_vs_Starved %>% arrange(p_value) %>% pull(UniprotID) %>% head(10)
+lowest_p_ni_proteins <- ni_rbps_de_mod %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
+lowest_p_us_proteins <- us_rbps_de_mod %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
 
 # Plots
-plotTop10(combined_ni_exprs,lowest_p_ni_proteins)
-plotTop10(combined_us_exprs,lowest_p_us_proteins)
-
-```
-OK, so the top changes (according to p-values) look reasonable but the changes are slight. We can use a volcano plot to visualise this...
-
-```{r 11_Volcano-plot}
-
-p <- Untreated_vs_Insulin %>% ggplot(aes(Estimate, -log10(p_value))) +
-  geom_point(size=0.5, alpha=0.5) +
-  geom_hline(yintercept=-log10(0.01), linetype=2, colour="grey50") +
-  annotate(geom="text", x=0, y=-log10(0.0075), label="p=0.01") +
-  xlab("Change in RNA binding (log2)") +
-  ylab("p-value (-log10)") +
-  ggtitle("Insulin vs Starved") +
-  my_theme +
-  coord_cartesian(ylim=c(0,4)) +
-  theme(plot.title=element_text(hjust=0.5))
-
-q <- Unstarved_vs_Starved %>% ggplot(aes(Estimate, -log10(p_value))) +
-  geom_point(size=0.5, alpha=0.5) +
-  geom_hline(yintercept=-log10(0.01), linetype=2, colour="grey50") +
-  annotate(geom="text", x=0, y=-log10(0.0075), label="p=0.01") +
-  xlab("Change in RNA binding (log2)") +
-  ylab("p-value (-log10)") +
-  ggtitle("Unstarved vs Starved") +
-  my_theme +
-  coord_cartesian(ylim=c(0,4)) +
-  theme(plot.title=element_text(hjust=0.5))
-
-print(p)
-print(q)
-
-```
-
-```{r 12_Plot-protein-of-interest-with-AIC}
-
-plotProteinOfInterest <- function(combined_exprs,poi, conditions=c("Starved", "Insulin")) {
-  
-  test_data <- combined_exprs %>%
-    filter(UniprotID %in% poi)
-    
-  p <- test_data %>%
-  ggplot(aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
-  geom_point() +
-  geom_line() +
-  #facet_grid(Entry.name~Type, scales="free") +
-  facet_wrap(~Type,  ncol=2) +
-  my_theme +ggtitle(gsub("X","",paste0(poi," : ",conditions[1]," vs ",conditions[2])))+theme(plot.title = element_text(hjust=0.5))
-  
-  print(p)
-  
-  test_data <- test_data %>% filter(Condition %in% conditions)
-  
-  fit <- test_data %>% lm(formula=Intensity~Condition*Type+Replicate)
-  print(summary(fit))
-  print(AIC(fit))
-  
-  fit2 <- test_data %>% lm(formula=Intensity~Condition*Type)
-  print(summary(fit2))
-  print(AIC(fit2))
-  
-}
-
-# Protein of interest
-plotProteinOfInterest(combined_ni_exprs,lowest_p_ni_proteins[1],c("X4hr.Starved", "X30min.Insulin"))
-plotProteinOfInterest(combined_us_exprs,lowest_p_us_proteins[1],c("Unstarved","X4h.Starved"))
-```
-OK, so the final thing to do is to check the proteins which show a nominally significant change in RNA binding. Are they enriched in the expected GO terms. See the `4_Over_rep_GO` notebook. We'll save out the results generated here.
+plotTop10(combined_ni_exprs,lowest_p_ni_proteins,"Starved vs Insulin-Treated")
+plotTop10(combined_us_exprs,lowest_p_us_proteins,"Unstarved vs Starved")

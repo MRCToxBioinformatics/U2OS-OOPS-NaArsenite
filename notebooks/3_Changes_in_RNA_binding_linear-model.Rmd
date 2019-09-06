@@ -1,0 +1,281 @@
+---
+title: "3b_Changes_in_RNA_binding_liner-modelling"
+author: "Manasa Ramakrishna"
+date: "05/09/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Below, we create the `data.frame` which will hold the expression values for all samples
+```{r 03_Combining-total-RBP-data}
+
+makeLongExprs <- function(obj, intersecting_proteins){
+  
+  obj_exprs <- exprs(obj[intersecting_proteins,])
+  colnames(obj_exprs) <- pData(obj)$Sample_name
+  
+  long_exprs <- obj_exprs %>%
+    data.frame() %>%
+    tibble::rownames_to_column("UniprotID") %>%
+    gather(key="Sample", value="Intensity", -UniprotID) %>%
+    separate(Sample, into=c("Condition", "Replicate"),sep="_")
+  
+  return(long_exprs)
+}
+
+# Combining Total and RBP data : NI
+total_ni_exprs <- makeLongExprs(total_ni_protein_quant,intersecting_ni_proteins)
+oops_ni_exprs <- makeLongExprs(oops_ni_protein_quant,intersecting_ni_proteins)
+combined_ni_exprs <- rbind(cbind(total_ni_exprs,Type="Total"), cbind(oops_ni_exprs,Type="RBPS"))
+combined_ni_exprs$Condition <- factor(combined_ni_exprs$Condition, levels=c("X4hr.Starved", "X30min.Insulin"))
+
+
+# Combining Total and RBP data : US
+total_us_exprs <- makeLongExprs(total_us_protein_quant,intersecting_us_proteins)
+oops_us_exprs <- makeLongExprs(oops_us_protein_quant,intersecting_us_proteins)
+combined_us_exprs <- rbind(cbind(total_us_exprs,Type="Total"), cbind(oops_us_exprs,Type="RBPS"))
+combined_us_exprs$Condition <- factor(combined_us_exprs$Condition, levels=c("Unstarved", "X4h.Starved"))
+```
+
+```{r 04_Adding-Uniprot-annotations-to-protein}
+protein_info <- read.delim("../shared_files/human_protein_ids_plus_gene_names.tsv")
+combined_ni_exprs <- combined_ni_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
+combined_us_exprs <- combined_us_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
+
+print(head(combined_ni_exprs))
+print(head(combined_us_exprs))
+```
+
+## Linear model for protein intensity
+```{r 05_Testing-terms-in-a-linear-model}
+
+# Condition, Type and Replicate
+fit <- combined_ni_exprs %>% filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
+  lm(formula=Intensity~Condition*Type+Replicate)
+print(summary(fit))
+
+# Condition and Type only
+fit2 <- combined_ni_exprs %>% filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
+  lm(formula=Intensity~Condition*Type)
+
+print(summary(fit2))
+```
+Now we model the protein intensity according to the model described in `dummy_example_vd.Rmd`. As an example, let's see the results from just applying the model to the first UniprotID (A0AVT1) in the Non Insulin-treated vs Insulin-Stimulated comparison. We can see that the model fits the data well ("Multiple R-squared:  0.9674,	Adjusted R-squared:  0.9484"). This is not really a great suprise since we've used all the known coefficients (Condition, Type and Replicate) to model the Intensity. 
+
+Note: MR, 2/9/2019 - shouldn't it be ConditionUntreated:TypeRBPs ? We can see that the interaction term that we're interested in (for changes in RNA binding) does not significantly deviate from zero (ConditionX30min.Insulin:TypeRBPS  Estimate=-.14031, Std. Error=0.10129,   t-statistic=-1.385,  p-value=0.191).
+
+Then, we model the same protein but without including the replicate. This is akin to assuming there is no difference between the replicate experiments, e.g no batch effect. Note that the estimates for the coefficients are the same but the "Std. Errors" are slightly smaller since we are including fewer available covariates in the model. Hence, our power to detect significant changes is higher. Also, note that the amount of variance explained by the model is nearly the same (Multiple R-squared:  0.9546,	Adjusted R-squared:  0.946) and the adjusted R-squared is greater. This indicates that the first model with more covariates is just about actually preferable as the additional covariate ("Replicate") does help model the dependent variable ("Intensity"). 
+
+However, there is still no significant change in RNA binding.
+
+We can formally compare two models using the [Akaike information criterion](https://en.wikipedia.org/wiki/Akaike_information_criterion). AIC measures the "goodness of fit" but with penalises models which use too many parameters to reach the goodness of fit. This is similiar to the adjusted R-Squared above. Lower AIC indicates a "better" model.
+
+So, for our full set of proteins, we will try both models and take the one with the lowest AIC and keep track of how many proteins were modeled including the "Replicate" covariate. 
+
+```{r 06_AIC-to-determine-which-model-is-better}
+testModels <- function(obj, coeff_of_interest="ConditionX30min.Insulin:TypeRBPS"){
+  
+  fit1 <- obj %>% lm(formula=Intensity~Condition*Type+Replicate)
+  fit2 <- obj %>% lm(formula=Intensity~Condition*Type)
+  
+  if ( AIC(fit1) < AIC(fit2) ) {
+    chosen_fit <- fit1
+    fit_name <- "With_replicate"
+  } else {
+    chosen_fit <- fit2
+    fit_name <- "Without_replicate"
+  }
+
+  fit_values <- c(coef(summary(chosen_fit))[coeff_of_interest,],
+                  summary(chosen_fit)$adj.r.squared,
+                  fit_name)
+  names(fit_values)[4:6] <- c("p_value", "adj_R_squared", "fit")
+  return(fit_values)
+}
+
+# Running tests on a single protein
+fit_values <- combined_ni_exprs %>% 
+  filter(UniprotID=='A0AVT1', Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
+  testModels()
+
+print(fit_values)
+```
+
+Below, we make a function to run the linear models on each protein in turn
+
+```{r 07_Modelling-the-entire-dataset}
+
+runLM <- function(obj, coeff_of_interest){
+   results <- obj %>%
+              ddply("UniprotID", function(x) testModels(x, coeff_of_interest))
+  
+  for(column in c("Estimate", "Std. Error", "t value", "adj_R_squared", "p_value")){
+    results[[column]] <- as.numeric(results[[column]])
+  }
+   
+  results$BH <- p.adjust(results$p_value, method="BH")
+  
+  # Merge in the protein names etc
+  results <- results %>% merge(protein_info, by.x="UniprotID", by.y="Entry", all.x=TRUE)
+  
+  # Return results
+  return(results)
+   
+}
+
+# Run LM for Untreated vs Insulin Treated
+Untreated_vs_Insulin <- combined_ni_exprs %>% 
+                        filter(Condition %in% c("X4hr.Starved", "X30min.Insulin")) %>%
+                        runLM("ConditionX30min.Insulin:TypeRBPS") %>% 
+                        arrange(BH)
+
+
+# Run LM for Unstarved vs Insulin-Starved
+Unstarved_vs_Starved <- combined_us_exprs %>% 
+                        filter(Condition %in% c("Unstarved","X4h.Starved")) %>%
+                        runLM("ConditionX4h.Starved:TypeRBPS") %>% 
+                        arrange(BH)
+
+# Write data to file for later use
+write.table(Untreated_vs_Insulin, "../results/Untreated_vs_Insulin_RNA_binding_changes.tsv", sep="\t", quote=FALSE, row.names=FALSE)
+write.table(Unstarved_vs_Starved, "../results/Unstarved_vs_Starved_RNA_binding_changes.tsv", sep="\t", quote=FALSE, row.names=FALSE)
+```
+
+Below, we plot the p-values. Under the null hypothesis they should show an approximately uniform distribution. If there were a large number of proteins with a significant change in RNA binding, we would expect an additional "spike" with very low p-value (<0.01). We see am approximately uniform distribution but with a skew towards low p-value. This may indicate the presence of changes in RNA binding but which we are insufficiently powered to detect, e.g low p-value but not significant low p-value.
+
+```{r 08_Plotting-p-values}
+
+plotP <- function(obj){
+  p <- ggplot(obj, aes(p_value)) + geom_histogram(bins=40) + my_theme
+  print(p)
+}
+
+plotP(Untreated_vs_Insulin)
+plotP(Unstarved_vs_Starved)
+
+```
+Below, we tabulate the results. We will use the standard Benjamini-Hochberg method to adjust p-values for the multiple tests we have conducted here (1354 proteins). 
+
+```{r 09_Significant-proteins-in-study}
+
+summariseSignificantChanges <- function(obj){
+  cat("Which fit was best?")
+  print(table(obj$fit))
+  
+  cat("\nHow many p-values < 0.01 per fit 'type'?")
+  print(table(obj$fit, obj$p_value<0.01))
+  
+  cat("\nHow many significant changes in RNA binding (1% FDR)?")
+  print(table(ifelse(obj$BH<0.01, "Sig.", "Not Sig."), ifelse(obj$Estimate>0, "Up", "Down")))
+
+}
+
+summariseSignificantChanges(Untreated_vs_Insulin)
+summariseSignificantChanges(Unstarved_vs_Starved)
+```
+
+So, we don't detect any significant changes in RNA binding (@ 1% FDR) between Untreated and Insulin treated conditions. Similarly for Starved vs Unstarved conditions. 
+
+Let's just do a sanity check. We'll take the top 10 proteins with the lowest p-value for the Starved vs Insulin comparison and plot their intensity values
+
+```{r, 10_Top-10-proteins, fig.height=10, fig.width=10}
+
+plotTop10<-function(combined_exprs,lowest_p_proteins){
+  test_df<- combined_exprs %>% 
+            filter(UniprotID %in% lowest_p_proteins) %>%
+            mutate(facet=interaction(factor(gsub("_HUMAN","",Entry.name.x)), Type)) %>%
+            arrange(UniprotID, Condition, Type)
+  
+  test_df$facet <- factor(test_df$facet, levels=unique(test_df$facet))
+  
+  test_df %>%
+    ggplot(aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(~facet, scales="free",  ncol=4) +
+    my_theme +
+    xlab("") +
+    ylab("Protein abundance (log2)") +
+    theme(text=element_text(size=10),
+          aspect.ratio=0.33)
+}
+
+# Data
+lowest_p_ni_proteins <- Untreated_vs_Insulin %>% arrange(p_value) %>% pull(UniprotID) %>% head(10)
+lowest_p_us_proteins <- Unstarved_vs_Starved %>% arrange(p_value) %>% pull(UniprotID) %>% head(10)
+
+# Plots
+plotTop10(combined_ni_exprs,lowest_p_ni_proteins)
+plotTop10(combined_us_exprs,lowest_p_us_proteins)
+
+```
+OK, so the top changes (according to p-values) look reasonable but the changes are slight. We can use a volcano plot to visualise this...
+
+```{r 11_Volcano-plot}
+
+p <- Untreated_vs_Insulin %>% ggplot(aes(Estimate, -log10(p_value))) +
+  geom_point(size=0.5, alpha=0.5) +
+  geom_hline(yintercept=-log10(0.01), linetype=2, colour="grey50") +
+  annotate(geom="text", x=0, y=-log10(0.0075), label="p=0.01") +
+  xlab("Change in RNA binding (log2)") +
+  ylab("p-value (-log10)") +
+  ggtitle("Insulin vs Starved") +
+  my_theme +
+  coord_cartesian(ylim=c(0,4)) +
+  theme(plot.title=element_text(hjust=0.5))
+
+q <- Unstarved_vs_Starved %>% ggplot(aes(Estimate, -log10(p_value))) +
+  geom_point(size=0.5, alpha=0.5) +
+  geom_hline(yintercept=-log10(0.01), linetype=2, colour="grey50") +
+  annotate(geom="text", x=0, y=-log10(0.0075), label="p=0.01") +
+  xlab("Change in RNA binding (log2)") +
+  ylab("p-value (-log10)") +
+  ggtitle("Unstarved vs Starved") +
+  my_theme +
+  coord_cartesian(ylim=c(0,4)) +
+  theme(plot.title=element_text(hjust=0.5))
+
+print(p)
+print(q)
+
+```
+
+```{r 12_Plot-protein-of-interest-with-AIC}
+
+plotProteinOfInterest <- function(combined_exprs,poi, conditions=c("Starved", "Insulin")) {
+  
+  test_data <- combined_exprs %>%
+    filter(UniprotID %in% poi)
+    
+  p <- test_data %>%
+  ggplot(aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
+  geom_point() +
+  geom_line() +
+  #facet_grid(Entry.name~Type, scales="free") +
+  facet_wrap(~Type,  ncol=2) +
+  my_theme +ggtitle(gsub("X","",paste0(poi," : ",conditions[1]," vs ",conditions[2])))+theme(plot.title = element_text(hjust=0.5))
+  
+  print(p)
+  
+  test_data <- test_data %>% filter(Condition %in% conditions)
+  
+  fit <- test_data %>% lm(formula=Intensity~Condition*Type+Replicate)
+  print(summary(fit))
+  print(AIC(fit))
+  
+  fit2 <- test_data %>% lm(formula=Intensity~Condition*Type)
+  print(summary(fit2))
+  print(AIC(fit2))
+  
+}
+
+# Protein of interest
+plotProteinOfInterest(combined_ni_exprs,lowest_p_ni_proteins[1],c("X4hr.Starved", "X30min.Insulin"))
+plotProteinOfInterest(combined_us_exprs,lowest_p_us_proteins[1],c("Unstarved","X4h.Starved"))
+```
+OK, so the final thing to do is to check the proteins which show a nominally significant change in RNA binding. Are they enriched in the expected GO terms. See the `4_Over_rep_GO` notebook. We'll save out the results generated here.
