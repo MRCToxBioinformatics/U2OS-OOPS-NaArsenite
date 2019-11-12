@@ -1,6 +1,6 @@
 ---
 title: "03: Changes in RNA Binding"
-author: "Tom Smith, Veronica Dezi, Manasa Ramakrishna"
+author: "Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   pdf_document:
@@ -15,13 +15,13 @@ editor_options:
 ---
 
 ```{r global_options, echo=FALSE}
-knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warASng=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
 ```
 ## 1. Introduction  
 
 In this section of the code, we are finally doing the interesting analysis which is finding out if there are any RBPs that are differentially expressed between conditions. Having looked at the data thus far, the extreme variability of the RBP Unstarved vs Starved samples might mean that we cannot really do a differential analysis with that set. However, we'll give it a go and see what happen. 
 
-```{r 00_Reading-in-utility-function, eval=T, echo=F}
+```{r 00_Reading-in-utility-function, eval=T, echo=F, warning=FALSE}
 
 source("../../CamProt_R/Utility.R")
 
@@ -83,7 +83,7 @@ my_volcanoplot <- function(topTableResults){
 #------------------------------------------------------------------
 combine_esets <- function(total,rbp){
 
-  # make the column names for the two MSnSets unique
+  # make the column names for the two MSnSets uASque
   colnames(total) <- paste0(colnames(total), "_Total")
   colnames(rbp) <- paste0(colnames(rbp), "_OOPS")
   
@@ -108,7 +108,7 @@ combine_esets <- function(total,rbp){
 # Input     : output from 'run_limma'
 # Output    : simplified data frame with results of linear modelling
 #-------------------------------------------------------------------------------
-modify_output <- function(rbps_de,cols=c(14:15,67,82:89)){
+modify_output <- function(rbps_de,cols=c(14:15,37,52:59)){
   rbps_mod = rbps_de[,cols]
   rbps_mod$protein_desc = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"OS="),"[[",1)
   rbps_mod$gene_name = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
@@ -131,7 +131,7 @@ run_limma <- function(combined_intensities,coeff){
   sample_name <- combined_intensities$Sample_name
   
   # limma design matrix
-  design <- model.matrix(~0+condition*type) 
+  design <- model.matrix(~0+condition*type)
   
   # Fit a linear model 
   rna_binding_fit <- lmFit(combined_intensities, design)
@@ -145,7 +145,7 @@ run_limma <- function(combined_intensities,coeff){
   # Look at the data
   plotSA(rna_binding_fit)
   
-  # Plotting significance
+  # Plotting sigASficance
   rna_binding_p_value_status <- ifelse(rna_binding_fit$p.value[,coeff]<0.05, "sig", "not_sig")
   limma::plotMA(rna_binding_fit, status=rna_binding_p_value_status, values=c("sig", "not_sig"),
                 col=c("magenta", "black"), cex=c(0.8,0.2), main="")
@@ -220,9 +220,11 @@ makeLongExprs <- function(obj, intersecting_proteins){
   
   long_exprs <- obj_exprs %>%
     data.frame() %>%
-    tibble::rownames_to_column("UniprotID") %>%
-    gather(key="Sample", value="Intensity", -UniprotID) %>%
+    tibble::rownames_to_column("uniprotID") %>%
+    gather(key="Sample", value="Intensity", -uniprotID) %>%
     separate(Sample, into=c("Condition", "Replicate"),sep="_")
+  
+  long_exprs$Condition = factor(long_exprs$Condition,levels=c("Ctrl","X100uM.Arsenite","X400uM.Arsenite"))
   
   return(long_exprs)
 }
@@ -233,13 +235,13 @@ makeLongExprs <- function(obj, intersecting_proteins){
 # Input     : 
 #       combined_exprs : combined total and rbp expression in long form, 
 #       lowest_p_proteins : list of proteins, ideally with smallest p-value
-#       suf : Suffix used in the title of plots explaining which experiment it is
+#       suf : Suffix used in the title of plots explaiASng which experiment it is
 # Output    : Long form of expression data with variables in columns 
 #-------------------------------------------------------------------------------
 plotTop10<-function(combined_exprs,lowest_p_proteins,suf){
   test_df<- combined_exprs %>% 
-            filter(UniprotID %in% lowest_p_proteins) %>%
-            arrange(UniprotID, Condition, Type)
+            filter(uniprotID %in% lowest_p_proteins) %>%
+            arrange(uniprotID, Condition, Type)
   test_df$Type = factor(test_df$Type,levels = c("RBPS","Total"))
   
   
@@ -257,15 +259,12 @@ plotTop10<-function(combined_exprs,lowest_p_proteins,suf){
 ```
 ## 2. Reading in normalised, outlier-free data
 
-We start by reading in the normalised data minus samples with really small MADs. From a starting point of 20 samples, we are now down to 16. 
+We start by reading in the normalised data and then setting up for a Limma analysis
+
 ```{r 02_Reading-in-data}
 
-total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm_nododgey.rds")
-oops_ni_protein_quant <- readRDS("../results/rbp_ni_res_pro_agg_norm_nododgey.rds")
-
-total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm_nododgey.rds")
-oops_us_protein_quant <- readRDS("../results/rbp_us_res_pro_agg_norm_nododgey.rds")
-
+total_as_protein_quant <- readRDS("../results/total_as_res_pro_agg_norm")
+oops_as_protein_quant <- readRDS("../results/rbp_as_res_pro_agg_norm")
 ```
 
 ## 3. LIMMA for differential protein expression analysis
@@ -279,152 +278,125 @@ LIMMA stands for Linear Models for Microarray and RNA-Seq Data and is a package 
 
 Initially, we perform this analysis for each of the 4 datasets separately.
 
-### 3a. The Design matrix
+## 3a. Combining total and RBP data
 
-Given we've removed various samples from each of the experiments, we need different design matrices for each of them. 
+It is relatively easy to perform a pairwise comparison between treated and untreated samples either in the RBP or Total proteome. What about changes in RNA binding? For this, we need combine the two MSnSets into a single ExpressionSet. We start by intersecting proteins within the Arsenite experiments so we can compare just those proteins that are captures across both total and RBP datasets. 
 
-```{r 3a_Design-matrix-setup}
+```{r 3a_Intersecting-proteins}
 
-# Extract information from the pData slot and make it suitable for design matrix formation
+intersecting_as_proteins <- intersect(rownames(total_as_protein_quant), rownames(oops_as_protein_quant))
+print(paste("Number of RBPs also captured in the Total Proteome for Control vs Arsenite treated samples is", length(intersecting_as_proteins)),sep="")
 
-# NI_Total
-setup_ni_tot = data.frame(cbind(Condition = sapply(strsplit(pData(total_ni_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(total_ni_protein_quant)$Sample_name,"_"),"[[",2)))
-rownames(setup_ni_tot) = rownames(pData(total_ni_protein_quant))
-setup_ni_tot$Condition = factor(setup_ni_tot$Condition,levels=c("4hr-Starved","30min-Insulin"))
+# Subset of intersecting AS proteins only
+total_as_for_combination <- total_as_protein_quant[intersecting_as_proteins,]
+rbp_as_for_combination <- oops_as_protein_quant[intersecting_as_proteins,]
+```
 
-# NI_RBP
-setup_ni_rbp = data.frame(cbind(Condition = sapply(strsplit(pData(oops_ni_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(oops_ni_protein_quant)$Sample_name,"_"),"[[",2)))
-rownames(setup_ni_rbp) = rownames(pData(oops_ni_protein_quant))
-setup_ni_rbp$Condition = factor(setup_ni_rbp$Condition,levels=c("4hr-Starved","30min-Insulin"))
+```{r 3b_Combining-expression-data}
 
-# US_Total
-setup_us_tot = data.frame(cbind(Condition = sapply(strsplit(pData(total_us_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(total_us_protein_quant)$Sample_name,"_"),"[[",2)))
-rownames(setup_us_tot) = rownames(pData(total_us_protein_quant))
-setup_us_tot$Condition = factor(setup_us_tot$Condition,levels=c("Unstarved","4hr-Starved"))
-
-# US_RBP
-setup_us_rbp = data.frame(cbind(Condition = sapply(strsplit(pData(oops_us_protein_quant)$Sample_name,"_"),"[[",1),Replicate = sapply(strsplit(pData(oops_us_protein_quant)$Sample_name,"_"),"[[",2)))
-rownames(setup_us_rbp) = rownames(pData(oops_us_protein_quant))
-setup_us_rbp$Condition = factor(setup_us_rbp$Condition,levels=c("Unstarved","4hr-Starved"))
-
-# Create-design-matrix
-
-des_ni_tot <- make_design_matrix(setup_ni_tot)
-des_ni_rbp <- make_design_matrix(setup_ni_rbp)
-
-des_us_tot <- make_design_matrix(setup_us_tot)
-des_us_rbp <- make_design_matrix(setup_us_rbp)
+combined_as_intensities = combine_esets(total_as_for_combination,rbp_as_for_combination)
+pData(combined_as_intensities)$Condition = factor(pData(combined_as_intensities)$Condition,levels = c("Ctrl","100uM-Arsenite","400uM-Arsenite"))
 
 ```
 
-### 3b. Linear model and contrasts
+The we run `limma` on the combined intensities and this time test for a signficant interaction coefficient. There are 224 proteins differentially expressed in cells treated with 100uM NaAs2 relative to Control and similarly, there are 184 proteins differentially expressed in cells treated with 400uM NaAs2 relative to Control.
 
-Below we run limma to idenify the proteins with a significant change in abundance between conditions, one experiment at a time using the function 'simple_limma'. Only 6 RNA binding-proteins were significantly DE and in the 4hr-Starved samples relative to the Unstarved samples. Since the US RBP experiment had extremely variable data, I wouldn't be confident in pursuing any of these any further. 
+```{r 3c_Limma-on-combined-data}
 
-```{r 3b_Fit-a-linear-model-extract-contrasts}
+# Ctrl-vs-100umArsenite
+as_rbps_de_100uM = run_limma(combined_as_intensities,"condition100uM-Arsenite:typeOOPS")
+as_rbps_de_mod_100uM = modify_output(as_rbps_de_100uM)
+as_rbps_p_value_100uM <- as_rbps_de_mod_100uM %>% filter(P.Value <= 0.05) 
+write_csv(as_rbps_p_value_100uM, path = "../results/Ctrl-vs-100uM-Arsenite-Treated-rawp-le-0.05.csv")
 
-lm_tot_ni <- simple_limma(total_ni_protein_quant,des_ni_tot,"30min-Insulin")
-lm_rbp_ni <- simple_limma(oops_ni_protein_quant,des_ni_rbp,"30min-Insulin")
-
-lm_tot_us <- simple_limma(total_us_protein_quant,des_us_tot,"4hr-Starved")
-lm_rbp_us <- simple_limma(oops_us_protein_quant,des_us_rbp,"4hr-Starved")
-
-lm_rbp_us_mod <- cbind(fData(oops_us_protein_quant)[rownames(head(lm_rbp_us)),],head(lm_rbp_us))
-lm_rbp_us_mod <- lm_rbp_us_mod[,c(14:15,67,82:87)]
-lm_rbp_us_mod$protein_desc = sapply(strsplit(lm_rbp_us_mod$Master.Protein.Descriptions,"OS="),"[[",1)
-lm_rbp_us_mod$gene_name = sapply(strsplit(lm_rbp_us_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
-colnames(lm_rbp_us_mod)[1] = "uniprot_id"
-lm_rbp_us_mod = lm_rbp_us_mod[,c(1,11,10,4:9)]
-
-# Write results to table
-write.table(lm_tot_ni,row.names=T,quote=F, file="../results/Untreated_vs_Insulin_ALL_Total-protein_changes.tsv")
-write.table(lm_rbp_ni,row.names=T,quote=F, file="../results/Untreated_vs_Insulin_ALL_RNA_binding_changes.tsv")
-
-write.table(lm_tot_us,row.names=T,quote=F, file="../results/Unstarved_vs_Starved_ALL_Total-protein_changes.tsv")
-write.table(lm_rbp_us,row.names=T,quote=F, file="../results/Unstarved_vs_Starved_ALL_RNA_binding_changes.tsv")
-write.table(lm_rbp_us_mod,row.names=F,quote=F, file="../results/Unstarved_vs_Starved_SIGNIF_RNA_binding_changes.tsv")
-```
-
-## 4. An alternate approach - combining total and RBP data
-OK, so it's easy to perform the pairwise comparison. What about changes in RNA binding? For this, we need combine the two MSnSets into a single ExpressionSet. We start by intersecting proteins within the NI or US experiments so we can compare just those proteins that are captures across both total and RBP datasets. 
-
-```{r 4a_Intersecting-proteins}
-
-intersecting_ni_proteins <- intersect(rownames(total_ni_protein_quant), rownames(oops_ni_protein_quant))
-print(paste("Number of RBPs also captured in the Total Proteome for Non-Insulin vs Insulin-treated samples is", length(intersecting_ni_proteins)),sep="")
-
-intersecting_us_proteins <- intersect(rownames(total_us_protein_quant), rownames(oops_us_protein_quant))
-print(paste("Number of RBPs also captured in the Total Proteome for Unstarved vs Starved samples is", length(intersecting_us_proteins)),sep="")
-
-# Subset of intersecting NI proteins only
-total_ni_for_combination <- total_ni_protein_quant[intersecting_ni_proteins,]
-rbp_ni_for_combination <- oops_ni_protein_quant[intersecting_ni_proteins,]
-
-# Subset of intersecting US proteins only
-total_us_for_combination <- total_us_protein_quant[intersecting_us_proteins,]
-rbp_us_for_combination <- oops_us_protein_quant[intersecting_us_proteins,]
-```
-
-```{r 4b_Combining-expression-data}
-
-combined_ni_intensities = combine_esets(total_ni_for_combination,rbp_ni_for_combination)
-pData(combined_ni_intensities)$Condition = factor(pData(combined_ni_intensities)$Condition,levels = c("4hr-Starved","30min-Insulin"))
-
-combined_us_intensities = combine_esets(total_us_for_combination,rbp_us_for_combination)
-pData(combined_us_intensities)$Condition = factor(pData(combined_us_intensities)$Condition,levels = c("Unstarved","4hr-Starved"))
+# Ctrl-vs-400umArsenite
+as_rbps_de_400uM = run_limma(combined_as_intensities,"condition400uM-Arsenite:typeOOPS")
+as_rbps_de_mod_400uM = modify_output(as_rbps_de_400uM)
+as_rbps_p_value_400uM <- as_rbps_de_mod_400uM %>% filter(P.Value <= 0.05) 
+write_csv(as_rbps_p_value_400uM, path = "../results/Ctrl-vs-400uM-Arsenite-Treated-rawp-le-0.05.csv")
 
 ```
+We are also interested in working out if there is any difference between the 100uM and 400uM treated cells. I have set the design up slightly differently here incorporating the replicate number as a blocking factor. Blocking can be applied in any situation where there are batch effects or where the experiment has been conducted in blocks. The treatments can be adjusted for differences between the blocks by using a model formula of the form  
 
-The we run `limma` on the combined intensities and this time test for a signficant interaction coefficient
+**_design <- model.matrix(~Block+Treatment)_**  
 
-```{r 4c_Limma-on-combined-data}
+```{r 3d_Alternate-design}
 
-# N_I
-ni_rbps_de = run_limma(combined_ni_intensities,"condition30min-Insulin:typeOOPS")
-ni_rbps_de_mod = modify_output(ni_rbps_de)
-ni_rbps_p_value <- ni_rbps_de_mod %>% filter(P.Value <= 0.05) 
-write_csv(ni_rbps_p_value, path = "../results/Non-Insulin-vs-Insulin-Treated-rawp-le-0.05.csv")
+# Create a design matrix
+pData(combined_as_intensities)$Rep = sapply(strsplit(pData(combined_as_intensities)$Sample_name,"\\_"),"[[",2)
+treat <- paste(combined_as_intensities$Condition, combined_as_intensities$Type, sep=".") 
+treat = gsub("\\-",".",treat)
+design2 = model.matrix(~0+treat)
 
-# U_S
-us_rbps_de = run_limma(combined_us_intensities,"condition4hr-Starved:typeOOPS")
-us_rbps_de_mod = modify_output(us_rbps_de)
-us_rbps_p_value <- us_rbps_de_mod %>% filter(P.Value <= 0.05) 
-write_csv(us_rbps_p_value, path = "../results/Unstarved-vs-Starved-rawp-le-0.05.csv")
+# Calculate correlation between replicates
+corfit <- duplicateCorrelation(combined_as_intensities,design2,block=combined_as_intensities$Rep)
+
+# Fit a linear model to include a block and correlation
+fit <- lmFit(combined_as_intensities,design2,block=pData(combined_as_intensities)$Rep,correlation=corfit$consensus)
+
+# Create a vector to extract contrasts
+cm <- makeContrasts(
+  Ctrlvs100uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
+  Ctrlvs400uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS),
+  As400vs100uM = (treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
+  levels=design2)
+
+# Extract contrasts from the fitted linear model
+fit2 <- contrasts.fit(fit, cm)
+
+# Calculating the F-statistic
+fit2 <- eBayes(fit2)
+
+# Extracting the top hits for each contrast
+Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs100uM",number = Inf,confint = T)
+de_mod_100uM = modify_output(Ctrl.100uM)
+p_value_100uM <- de_mod_100uM %>% filter(P.Value <= 0.05)
+write.table(p_value_100uM, "../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+
+Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs400uM",number = Inf,confint = T)
+de_mod_400uM = modify_output(Ctrl.400uM)
+p_value_400uM <- de_mod_400uM %>% filter(P.Value <= 0.05)
+write.table(p_value_400uM,"../results/Ctrl-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+
+As400.100uM = topTable(fit2, adjust = "BH",coef = "As400vs100uM",number = Inf,confint = T)
+de_mod_100.400uM = modify_output(As400.100uM)
+p_value_100.400uM <- de_mod_100.400uM %>% filter(P.Value <= 0.05) 
+write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+
+# Significantly DE proteins - only a few
+de_mod_100uM %>% filter(adj.P.Val <= 0.05)
+de_mod_400uM %>% filter(adj.P.Val <= 0.05)
+de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
 ```
-## 5. Plotting expression of Top 10 proteins across studies
-This is to see whether we have a reason for not spotting any DE proteins. Looking at the plots, it is pretty clear that the differences between treatments is pretty minimal i.e the trend lines are not very extreme and only in a few cases are the trend lines really varied between Total proteome and RBP-ome. Given this, I'm not surprised that we don't find many DE genes. To me, it would seem that either (1) the effect of the treatment isn't as strong as we'd hoped for or (2) Something BAAAD happened on the mass spectrometer. 
+While there are several proteins whose p-value is significant, only a few survive multiple testing correction (shown above). Of these, there doesn't seem to be much in the way of a functional theme. Hence, there isn't much to go on for GO enrichment analysis. We could use the lists based just on raw p-value and see if we have any luck with them. 
 
-```{r 5_Plotting-expression-data-per-protein}
+## 4. Plotting expression of Top 10 proteins across studies
+This is to see whether we have a reason for not spotting any DE proteins. Looking at the plots, it is pretty clear that the differences between treatments is pretty minimal i.e the trend lines are not very extreme and only in a few cases are the trend lines really varied between Total proteome and RBP-ome.  
 
-# Combining Total and RBP data : NI
-total_ni_exprs <- makeLongExprs(total_ni_protein_quant,intersecting_ni_proteins)
-oops_ni_exprs <- makeLongExprs(oops_ni_protein_quant,intersecting_ni_proteins)
-combined_ni_exprs <- rbind(cbind(total_ni_exprs,Type="Total"), cbind(oops_ni_exprs,Type="RBPS"))
-combined_ni_exprs$Condition <- factor(combined_ni_exprs$Condition, levels=c("X4hr.Starved", "X30min.Insulin"))
+```{r 4_Plotting-expression-data-per-protein}
 
-
-# Combining Total and RBP data : US
-total_us_exprs <- makeLongExprs(total_us_protein_quant,intersecting_us_proteins)
-oops_us_exprs <- makeLongExprs(oops_us_protein_quant,intersecting_us_proteins)
-combined_us_exprs <- rbind(cbind(total_us_exprs,Type="Total"), cbind(oops_us_exprs,Type="RBPS"))
-combined_us_exprs$Condition <- factor(combined_us_exprs$Condition, levels=c("Unstarved", "X4hr.Starved"))
+# Combining Total and RBP data : AS
+total_as_exprs <- makeLongExprs(total_as_protein_quant,intersecting_as_proteins)
+oops_as_exprs <- makeLongExprs(oops_as_protein_quant,intersecting_as_proteins)
+combined_as_exprs <- rbind(cbind(total_as_exprs,Type="Total"), cbind(oops_as_exprs,Type="RBPS"))
 
 # Adding protein information
 protein_info <- read.delim("../shared_files/human_protein_ids_plus_gene_names.tsv")
-combined_ni_exprs <- combined_ni_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
-combined_ni_exprs$Condition = gsub("X4hr.|X30min.","",combined_ni_exprs$Condition)
-combined_ni_exprs$Condition = factor(combined_ni_exprs$Condition,levels=c("Starved","Insulin"))
-combined_us_exprs <- combined_us_exprs %>% merge(protein_info, by.x="UniprotID", by.y="Entry")
-combined_us_exprs$Condition = gsub("X4hr.|X30min.","",combined_us_exprs$Condition)
-combined_us_exprs$Condition = factor(combined_us_exprs$Condition,levels=c("Unstarved","Starved"))
+combined_as_exprs <- combined_as_exprs %>% merge(protein_info, by.x="uniprotID", by.y="Entry")
 
-#print(head(combined_ni_exprs))
-#print(head(combined_us_exprs))
+# Renaming the levels for better plotting
+library(plyr)
+combined_as_exprs$Condition = revalue(combined_as_exprs$Condition, c("X400uM.Arsenite"="As-400uM", "X100uM.Arsenite"="As-100uM"))
+str(combined_as_exprs)
 
-# Data
-lowest_p_ni_proteins <- ni_rbps_de_mod %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
-lowest_p_us_proteins <- us_rbps_de_mod %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
+# Top 10 proteins from both comparisons
+lowest_p_ctrl_100uM_proteins <- p_value_100uM %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
+lowest_p_ctrl_400uM_proteins <- p_value_400uM %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
+lowest_p_100_400uM_proteins <- p_value_100.400uM %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(6)
 
 # Plots
-plotTop10(combined_ni_exprs,lowest_p_ni_proteins,"Starved vs Insulin-Treated")
-plotTop10(combined_us_exprs,lowest_p_us_proteins,"Unstarved vs Starved")
+plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-400uM"),],lowest_p_ctrl_100uM_proteins,"Ctrl vs 100uM Arsenite")
+
+plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-100uM"),],lowest_p_ctrl_400uM_proteins,"Ctrl vs 400uM Arsenite")
+
+plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "Ctrl"),],lowest_p_100_400uM_proteins,"100uM vs 400uM Arsenite")

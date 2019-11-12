@@ -1,6 +1,6 @@
 ---
 title: "01: Quality Control and Aggregation to Proteins"
-author: "Tom Smith, Veronica Dezi, Manasa Ramakrishna"
+author: "Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   pdf_document:
@@ -16,7 +16,9 @@ output:
 knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
 ```
 ## 1. Introduction  
-This is a large experiment by Veronica testing the effects of Insulin deprivation and stimulation on MCF10A "normal" breast cells that are highly dependent on insulin for their growth. The experimental set up is shown below. As you can see, there are 5 replicates for each conditions. Set1 and Set 2 have been analysed in two 10-plex TMT experiments on the mass spectrometer. Here, we would like to assess the differences in RNA-binding proteins, if any, in (1) Insulin-starved and (2) Insulin-stimulated cells relative to their controls.  
+This is an experiment by Eneko and Rayner testing the effects of sodium arsenite (NaAs2) treatment on U2OS osteosarcoma cell lines. Sodium arsenite is an appropriate chemical stressor to induce the production of heat shock proteins, and the formation of cytoplasmic stress granules. 
+
+Cells were either left untreated, treated with 100uM NaAs2 or treated with 400uM NaAs2. There 3 replicates for each condition except the 100uM setting which has 4. Each of these samples has undergone OOPS to obtain Total proteome (organic phase) and RBPome (interphase). The proteins set has been analysed on the mass spectrometer using a 10-plex TMT experiment. Here, we would like to assess the differences in RNA-binding proteins, if any, in (1) 100uM NaAs2 treatment vs Control and (2) 400uM NaAS2 treatment vs control (3) 100uM NaAs2 vs 400uM NaAs2.  
 
 In the following lines of code, we will:  
  1. Look the raw data  
@@ -28,7 +30,7 @@ In the following lines of code, we will:
  7. Look for differentially expressed RBPs across conditions  
  8. Look for GO term enrichment in the differential RBPs  
 
-![Experimental setup for MCF10A cells stimulated by/starved of Insulin](../MCF10A-Insulin-Experimental-Setup.png)
+![Experimental setup for U2OS cells treated with Sodium Arsenite](../U2OS-Sodium-Arsenite-Experimental-Setup.png)
 
 ***
 
@@ -60,7 +62,7 @@ glycoproteins <- glycoproteins %>% pull(protein) %>% as.character() %>% unique()
 
 run_parse_features <- function(fname){
   
-  df = parse_features(fname,master_protein_col='Master.Protein.Accessions',protein_col='Master.Protein.Accessions')
+  df = parse_features(fname,master_protein_col='Master.Protein.Accessions',protein_col='Protein.Accessions')
   df_noglyc = df[!df$Master.Protein.Accessions %in% glycoproteins,]
   
   cat(sprintf("%s\tExcluding glycoproteins\n", length(rownames(df_noglyc))))
@@ -98,8 +100,12 @@ summariseMissing <- function(res){
 #----------------------------------------------------------------------------------
 # Function  : plotLabelQuant
 # Aim       : Plot peptide abundance distributions for mass spectrometry data
+# Input     : obj = MSnSet object
+#           : log = Should plotting values be logged - TRUE or FALSE
+#           : print = SHould plot be printed to screen or not
+#           : suf = title suffix
 #----------------------------------------------------------------------------------
-plotLabelQuant <- function(obj, log=F, print=TRUE){
+plotLabelQuant <- function(obj, log=F, print=TRUE,suf){
   tmp_df <- data.frame(exprs(obj))
   colnames(tmp_df) <- pData(obj)$Sample_name
   tmp_df[tmp_df==""] <- NA
@@ -116,10 +122,10 @@ plotLabelQuant <- function(obj, log=F, print=TRUE){
   p1 <- p + geom_boxplot(aes(variable, value)) +
     theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1,size=10),axis.title.y = element_text(size = 12), title = element_text(hjust = 0.5, vjust=0.5)) +
     ylab("Peptide intensity (log2) ") + xlab("") +
-    scale_y_continuous(breaks=seq(-100,100,2))
+    scale_y_continuous(breaks=seq(-100,100,2))+ggtitle(suf)
   
   p2 <- p + geom_density(aes(value, col=variable),na.rm=T) +
-    xlab("Peptide intensity (log2) ") + ylab("Density")+theme_classic()+theme(axis.title.y = element_text(size = 12),axis.title.x = element_text(size = 12),legend.title = element_text(size = 10),legend.position = c(0.9,0.5),legend.text = element_text(size = 8))+labs(col = "")+guides(color = guide_legend(override.aes = list(size = 0.4)))+scale_x_continuous(breaks=c(0,3,6,9,12))
+    xlab("Peptide intensity (log2) ") + ylab("Density")+theme_classic()+theme(axis.title.y = element_text(size = 12),axis.title.x = element_text(size = 12),legend.title = element_text(size = 10),legend.position = c(0.9,0.5),legend.text = element_text(size = 8))+labs(col = "")+guides(color = guide_legend(override.aes = list(size = 0.4)))+scale_x_continuous(breaks=c(0,3,6,9,12))+ggtitle(suf)
   
   p3 = arrangeGrob(p1,p2,nrow=1)
   
@@ -133,8 +139,10 @@ plotLabelQuant <- function(obj, log=F, print=TRUE){
 #----------------------------------------------------------------------------------
 # Function  : plotPepCounts
 # Aim       : Plot distribution of peptide count per protein
+# Input     : res_pep_agg = peptide level mass spectrometry data as an MSnSet
+#           : suf = title suffix
 #----------------------------------------------------------------------------------
-plotPepCounts <- function(res_pep_agg){
+plotPepCounts <- function(res_pep_agg,suf){
   fData(res_pep_agg) <- fData(res_pep_agg)[,-grep("CV.*", colnames(fData(res_pep_agg)))]
   
   gb <- fData(res_pep_agg)$Master.Protein.Accessions
@@ -145,7 +153,7 @@ plotPepCounts <- function(res_pep_agg){
                 length(unique(gb)), sum(peptide_counts==1),
                 round(100*sum(peptide_counts==1)/length(unique(gb)), 1)))
   
-  titl = paste(unique(sapply(strsplit(pData(res_pep_agg)$Sample_name,"_"),"[[",1)),collapse=".vs.")
+  titl = paste(suf,paste(unique(sapply(strsplit(pData(res_pep_agg)$Sample_name,"_"),"[[",1)),collapse=".vs."),sep=": ")
   p <- ggplot(peptide_counts, aes(log(Freq,2))) + geom_histogram() + my_theme +theme(axis.title.x=element_text(size=12),axis.title.y = element_text(size = 14),plot.title=element_text(hjust=0.5,vjust=1,size=18))+xlab("Log2(Number of peptides)")+ylab("Number of proteins")+labs(title = titl)
   return(p)
 }
@@ -154,13 +162,13 @@ plotPepCounts <- function(res_pep_agg){
 ## 2. Read in the peptide-level quantification  
 What we obtain following a mass spectrometer run is peptide-level quantification from Proteome Discoverer(PD). Here we perform some Quality Control checks before aggregating data to protein-level quantification. 
 
-As discussed before, there are 2 sets of experiments that need to be analysed :  
-a. Non-Insulin Stimulated (4hr-Starved) vs Insulin Stimulated (30min.Insulin) MCF10A cells  
-b. Unstarved vs Starved (4hr-Starved) MCF10A cells  
+As discussed before, there are a single dataset to be analysed :  
+a. Control vs Sodium Arsenite (100uM, 400uM) treatment
 
 The function 'parse_features' reads in a peptide-level data file and processes it remove any contaminants, peptides missing a protein assignment and those that are missing quantification values (details in 'Utility.R'). 
 
 ```{r 02_Peptide-level-quantification}
+
 # Parsing input files
 files = grep("reannot",list.files("../raw",full.names = T),value=T)
 suff = gsub("_reannot.txt|_peptides","",sapply(strsplit(files,"/"),"[[",3))
@@ -178,13 +186,11 @@ grep("df",ls(),value=T)
 
 # Summarise the number of RBPs and Total proteins in each set of experiments
 
-# 1. Non-insulin (4hr-Starved) vs Insulin Stimulated (30min-Insulin)
-assess_rbp_tot_overlap(rbp_ni_df, total_ni_df, "N-vs-I")
+# 1. Control vs Arsenite treated
+assess_rbp_tot_overlap(rbp_arsenite_df, total_arsenite_df, "Control-vs-Arsenite")
 
-# 2. Unstarved vs Starved (4hr-Starved)
-assess_rbp_tot_overlap(rbp_us_df, total_us_df, "U-vs-S")
 ```
-In the Non-Stimulated vs Insulin Stimulated experiments, nearly 80% of RBPs are also in the total samples. In the Unstarved vs Starved experiments, only about 70% of RBPs are also in the total samples. For most of the RBPs we will also have information regarding the changes in the total abundance for the protein, regardless of the abundance of the RNA-bound fraction. However, for 20-30% of them, we won't. 
+In the experiment, nearly 80% of RBPs are also in the total samples. For most of the RBPs we will also have information regarding the changes in the total abundance for the protein, regardless of the abundance of the RNA-bound fraction. However, for 20-30% of them, we won't. 
 
 ## 3. Creating and working with MSnSets
 First we create the dataframes to make an MSnSet object. It is based on a microarray eSet or ExpressionSet where the object contains slots with information and during data processing, the functions that work with MSnSets handle data within these slots as they expect very specific data types. The MSnSet has 3 main slots.  
@@ -195,29 +201,23 @@ c. pData : (phenotype Data) Contains annotation information about each sample in
 ```{r 03_Creating-an-MSnSet-from-data}
 
 # Read in experimental set-up data
-samples_ni_inf <- "../raw/samples_ni.tsv"
-samples_us_inf <- "../raw/samples_us.tsv"
+samples_as_inf <- "../raw/samples.tsv"
 
-total_ni_res <- makeMSNSet(total_ni_df, samples_ni_inf)
-rbp_ni_res <- makeMSNSet(rbp_ni_df, samples_ni_inf)
-
-total_us_res <- makeMSNSet(total_us_df, samples_us_inf)
-rbp_us_res <- makeMSNSet(rbp_us_df, samples_us_inf)
+total_as_res <- makeMSNSet(total_arsenite_df, samples_as_inf)
+rbp_as_res <- makeMSNSet(rbp_arsenite_df, samples_as_inf)
 
 # Check relative quantification in data
-q1 <- plotLabelQuant(total_ni_res, log=T,print=F)
-q2 <- plotLabelQuant(rbp_ni_res, log=T,print=F)
-q3 <- plotLabelQuant(total_us_res, log=T,print=F)
-q4 <- plotLabelQuant(rbp_us_res, log=T,print=F)
+q1 <- plotLabelQuant(total_as_res, log=T,print=F,suf="Total")
+q2 <- plotLabelQuant(rbp_as_res, log=T,print=F,suf="RBP")
 
 # Boxplots of raw data
-g = grid.arrange(q1$p1,q2$p1,q3$p1,q4$p1,nrow=2)
-#grid.arrange(q1$p2,q2$p2,q3$p2,q4$p2,nrow=2)
+g = grid.arrange(q1$p1,q2$p1,ncol=2)
+grid.arrange(q1$p2,q2$p2,ncol=2)
 ```
 
-Once we've created MSnSets, we look at the distribution of abundance values on a per-sample basis keeping in mind that it is currently at the level of peptides. From the plots on the left, you can see that for the Total N_I experiment, 4hr-Starved_1 seems to have a different profile with more lowly expressed proteins than the remaining 9. For the Total & RBP U_S experiment, 4hr-Starved_4 seems to have strikingly lowly expressed proteins. It could be that slightly lower protein amount was mixed into the multiplex experiment for this replicate but need to chat to Rayner and Veronica about this.  
+Once we've created MSnSets, we look at the distribution of abundance values on a per-sample basis keeping in mind that it is currently at the level of peptides. From the plots on the left (Total protein), the trend seems to be that there is higher expression of proteins in the control, a drop in the 100uM Arsenite treatment and a slight increase in expression in the 400uM treatment. This trend is similar in the RBP experiment (right side plot) with the overall expression being lower than in the total proteome and having a few more extreme outliers.
 
-In general, the RBP experiments are more variable than the Total Proteome experiments but that is to be expected given the functioning RBPs in a snapshot of time can be different in each replicate experiment. Additionally, at least in the Straved-vs-Insulin treated experiments, the density curves of each treatment are shifted away from each other (squint a little bit!). If there is a convincing biological reason to do so, we would remove probelmatic samples - particularly replicate 4 in the Unstarved vs Starved experiment for both TotalProt and RBPs.  
+The density curves of each treatment are shifted away from each other (squint a little bit!) but overall the samples all follow a very normal distribution. No problematic samples can be identified.
 
 ### 3a. Aggregating over peptides
 If you look at the fData slot in the MSnSets above, you will see that there is a column called "Sequence" that contains the sequence of the peptide whose abundance has been measured. Interestingly, there are some repeats of these sequences for the same protein that only differ in their Modifications i.e any amino acid modifications that the mass spectrometer has picked up. We will first aggregate over the peptides with the same sequence but different modifications so that we only have one peptide representing a given sequence. The abundance values are summed across different modifications. Note: Don't worry about the errors. Missing values are correctly handled here!!
@@ -225,44 +225,35 @@ If you look at the fData slot in the MSnSets above, you will see that there is a
 ```{r 3i_Aggregating-over-peptides}
 
 # Aggregate to peptides
-total_ni_res_pep_agg <- agg_to_peptides(total_ni_res)
-rbp_ni_res_pep_agg <- agg_to_peptides(rbp_ni_res)
-total_us_res_pep_agg <- agg_to_peptides(total_us_res)
-rbp_us_res_pep_agg <- agg_to_peptides(rbp_us_res)
+total_as_res_pep_agg <- agg_to_peptides(total_as_res)
+rbp_as_res_pep_agg <- agg_to_peptides(rbp_as_res)
 
 # Summarise missing values
-summariseMissing(total_ni_res_pep_agg)
-summariseMissing(rbp_ni_res_pep_agg)
-summariseMissing(total_us_res_pep_agg)
-summariseMissing(rbp_us_res_pep_agg)
+summariseMissing(total_as_res_pep_agg)
+summariseMissing(rbp_as_res_pep_agg)
 
 # Save to RDS files for downstream use
-saveRDS(total_ni_res_pep_agg, file="../results/total_ni_res_pep_agg.rds")
-saveRDS(rbp_ni_res_pep_agg, file="../results/rbp_ni_res_pep_agg.rds")
-saveRDS(total_us_res_pep_agg, file="../results/total_us_res_pep_agg.rds")
-saveRDS(rbp_us_res_pep_agg, file="../results/rbp_us_res_pep_agg.rds")
+saveRDS(total_as_res_pep_agg, file="../results/total_as_res_pep_agg.rds")
+saveRDS(rbp_as_res_pep_agg, file="../results/rbp_as_res_pep_agg.rds")
 
 ```
 You might have noticed that while we created the MSnSet, we also did a tally for how many samples had missing values across all of the peptides. Across the four studies, the number of peptides missing all 10 values in the 10-plex is shown in the table below. 
 
 Experiment  | Raw peptide data | Aggregated peptide data  | 
 ------------|---------------------|-------------------------------------|
-Total Insulin-Starved vs Stimulated | 4478 peptides |0 peptides |
-RBPs Insulin-Starved vs Stimulated  | 2831 peptides |0 peptides |
-Total Unstarved vs Starved  | 2990 peptides |0 peptides |
-RBP Unstarved vs Starved  | 1856 peptides |0 peptides |  
+Control vs NaAs2 | 1113 peptides |0 peptides |
+Control vs NaAs2  | 898 peptides |0 peptides |
 
-Once we aggregate across modifications, there are no peptides where all 10 values are missing. They must have all been peptides with two or more alternate modifications that have now been rolled into one. However, there are still a small number of peptides that have some missing values but mostly in one or 2 samples only as shown in the plot below. The grey bars display missing values and black display non-missing values.Samples with most number of missing values mostly seem to correspond to those that stick out in the PCA plots in the next notebook. 
-
+Once we aggregate across modifications, there are no peptides where all 10 values are missing. They must have all been peptides with two or more alternate modifications that have now been rolled into one. However, there are still a small number of peptides that have some missing values but mostly in one or 2 samples only as shown in the plot below. The grey bars display missing values and black display non-missing values.The plots only display those peptides with one or more missing values. Peptides with no missing values are not shown. Missing values are only affecting treated samples, not control ones.
 
 ```{r 3ii-Plot-missing-data-at-peptide-level}
 
-names = c("TotalProt-Non-Insulin-vs-Insulin-Stimulated","RBPs-Non-Insulin-vs-Insulin-Stimulated","TotalProt-Unstarved-vs-Starved","RBPs-Unstarved-vs-Starved")
+names = c("TotalProt-Control-vs-NaAs2-Treated","RBPs-Control-vs-NaAs2-Treated")
 c = 1
 
 pdf("../plots/Missing-value-heatmaps-peptide-level-data.pdf",paper="a4r",width=14,height=8)
 
-for(i in list(total_ni_res_pep_agg,rbp_ni_res_pep_agg,total_us_res_pep_agg,rbp_us_res_pep_agg)){
+for(i in list(total_as_res_pep_agg,rbp_as_res_pep_agg)){
   if(length(summariseMissing(i))>=3){
     plotMissing(i,cexCol=0.8,srtCol=45,main = names[c])
   }
@@ -276,16 +267,14 @@ Since we want to aggregate peptides into proteins, we check initially to see how
 ```{r 3iii-Plot-peptide-vs-protein-count}
 
 # Use function 'plotPepCounts' to plot distribution over peptide level data
-p1=plotPepCounts(total_ni_res_pep_agg)
-p2=plotPepCounts(rbp_ni_res_pep_agg)
-p3=plotPepCounts(total_us_res_pep_agg)
-p4=plotPepCounts(rbp_us_res_pep_agg)
+p1=plotPepCounts(total_as_res_pep_agg,"Total")
+p2=plotPepCounts(rbp_as_res_pep_agg,"RBP")
 
 pdf("../plots/Distribution-of-peptides-per-protein.pdf",paper="a4r",width=14,height=8)
-grid.arrange(p1,p2,p3,p4,nrow=2)
+grid.arrange(p1,p2,ncol=2)
 dev.off()
 ```
-So we have 13-19% "one-hit" wonders across the 4 experiments (NI - Total (15.7%),RBP (17.8%); US - Total(12.5%),RBP(18.5%)). We'll leave these in for now but we could consider excluding these as we have less confident abundance estimates here. 
+So we have 37-42% "one-hit" wonders across the experiments (Total (37.3%),RBP (42.2%). We'll leave these in for now as we'd be taking 40% of the data out if we deleted them but we could consider excluding these as we have less confident abundance estimates here. 
 
 ### 3b. Aggregating over proteins
 Having aggregated across peptides with multiple modifications, we now was an abundance value per protein per samples. To achieve this, we need to aggregate again, this time using Uniprot IDs to identify all peptides that belong to a single protein and summing abundance values across these peptides to get a single value for a given protein. Following this, we once again do a tally for missing values at the protein level. 
@@ -293,53 +282,25 @@ Having aggregated across peptides with multiple modifications, we now was an abu
 ```{r 3iv-Aggregating-over-proteins}
 
 # Aggregate to protein
-total_ni_res_pro_agg <- agg_to_protein(total_ni_res_pep_agg, "Master.Protein.Accessions")
-rbp_ni_res_pro_agg <- agg_to_protein(rbp_ni_res_pep_agg, "Master.Protein.Accessions")
-total_us_res_pro_agg <- agg_to_protein(total_us_res_pep_agg, "Master.Protein.Accessions")
-rbp_us_res_pro_agg <- agg_to_protein(rbp_us_res_pep_agg, "Master.Protein.Accessions")
+total_as_res_pro_agg <- agg_to_protein(total_as_res_pep_agg, "Master.Protein.Accessions")
+rbp_as_res_pro_agg <- agg_to_protein(rbp_as_res_pep_agg, "Master.Protein.Accessions")
 
 # Summarise missing values
-summariseMissing(total_ni_res_pro_agg)
-summariseMissing(rbp_ni_res_pro_agg)
-summariseMissing(total_us_res_pro_agg)
-summariseMissing(rbp_us_res_pro_agg)
+summariseMissing(total_as_res_pro_agg)
+summariseMissing(rbp_as_res_pro_agg)
 ```
-Note, we're now down to very few missing values and that too in very few samples (1,2,4 out of 10). So few that we could remove these proteins entirely (0/2792 Total NI proteins; 1/1399 RBP NI proteins; 3/2805 for Total US proteins, 33/1048). Since at most we are only missing 3% of values, we will keep proteins with missing values in for now. We might consider removing them later. 
+Note, we're now down to 2 samples with missing values across 3 proteins. Since there are only 3 proteins with missing values, it isn't worth imputing so we remove these proteins entirely as it doesn't make much of a difference. These proteins are P36406 (TRI23_HUMAN, E3 ubiquitin-protein ligase TRIM23) and Q96A35 (RM24_HUMAN,39S ribosomal protein L24, mitochondrial) in the total proteome and P13804 (ETFA_HUMAN, Electron transfer flavoprotein subunit alpha, mitochondrial) in the RBPome.  
 
-```{r 3v-Plot-missing-data-at-protein-level}
+```{r 3v-Remove-missing-data-at-protein-level}
 
-names = c("TotalProt-Non-Insulin-vs-Insulin-Stimulated","RBPs-Non-Insulin-vs-Insulin-Stimulated","TotalProt-Unstarved-vs-Starved","RBPs-Unstarved-vs-Starved")
-c = 1
+total_as_res_pro_agg = total_as_res_pro_agg[-which(rowSums(is.na(exprs(total_as_res_pro_agg))) > 0)]
+rbp_as_res_pro_agg = rbp_as_res_pro_agg[-which(rowSums(is.na(exprs(rbp_as_res_pro_agg))) > 0)]
 
-pdf("../plots/Missing-value-heatmaps-protein-level-data.pdf",paper="a4r",width=14,height=8)
+saveRDS(total_as_res_pro_agg, file="../results/total_as_res_pro_agg.rds")
+saveRDS(rbp_as_res_pro_agg, file="../results/rbp_as_res_pro_agg.rds")
 
-for(i in list(total_ni_res_pro_agg,rbp_ni_res_pro_agg,total_us_res_pro_agg,rbp_us_res_pro_agg)){
-  if(length(summariseMissing(i))>=3){
-    plotMissing(i,cexCol=0.8,srtCol=45,main = names[c])
-  }
-  c = c+1
-}
-dev.off()
 ```
-Having carried on with missing values, they do cause trouble at the PCA level so I'm going to replace missing values with the smallest non-missing value (min) in the dataset. For the Total NI dataset, this has no impact. For the RBP NI dataset, this changes one value. For the Total US dataset, this changes 6 values and for the RBP US dataset, 34 values are set to 'min' of which 32 are missing only from one sample (4hr Starved, Rep 4). I'm using the MSnBase 'impute' function here for ease of use. 
 
-```{r 3vi-Impute-proteins-with-missing-values}
-total_ni_res_pro_agg <- MSnbase::impute(total_ni_res_pro_agg, method = "min")
-rbp_ni_res_pro_agg <- MSnbase::impute(rbp_ni_res_pro_agg, method = "min")
-total_us_res_pro_agg <- MSnbase::impute(total_us_res_pro_agg, method = "min")
-rbp_us_res_pro_agg <- MSnbase::impute(rbp_us_res_pro_agg, method = "min")
-
-summariseMissing(total_ni_res_pro_agg)
-summariseMissing(rbp_ni_res_pro_agg)
-summariseMissing(total_us_res_pro_agg)
-summariseMissing(rbp_us_res_pro_agg)
-
-# Save to RDS files for downstream use
-saveRDS(total_ni_res_pro_agg, file="../results/total_ni_res_pro_agg.rds")
-saveRDS(rbp_ni_res_pro_agg, file="../results/rbp_ni_res_pro_agg.rds")
-saveRDS(total_us_res_pro_agg, file="../results/total_us_res_pro_agg.rds")
-saveRDS(rbp_us_res_pro_agg, file="../results/rbp_us_res_pro_agg.rds")
-```
 
 ### 3c. Normalising data
 Next, we log center normalise the data. The total amount of peptide labelled in each sample should be the same so we can assume any difference in the total intensity per tag is due to inaccuracies in peptide quantification prior to labelling, pipetting etc, or non-identical labelling efficiencies. Whatever the cause, we can normalise the tags since we want to obtain a relative measure between tags. 
@@ -349,56 +310,35 @@ So we log centre normalise the data first. This leaves us with the median abunda
 ```{r 3vii-Normalise-data}
 
 # Median central normalise
-total_ni_res_pro_agg_norm <- logCenterNormalise(total_ni_res_pro_agg)
-exprs(total_ni_res_pro_agg_norm) <- exprs(total_ni_res_pro_agg_norm) + median(log2(exprs(total_ni_res_pro_agg)),na.rm=T)
+total_as_res_pro_agg_norm <- logCenterNormalise(total_as_res_pro_agg)
+exprs(total_as_res_pro_agg_norm) <- exprs(total_as_res_pro_agg_norm) + median(log2(exprs(total_as_res_pro_agg)),na.rm=T)
+pData(total_as_res_pro_agg_norm)$Sample_name = gsub("\\_Arsenite","-Arsenite",pData(total_as_res_pro_agg_norm)$Sample_name)
   
-rbp_ni_res_pro_agg_norm <- logCenterNormalise(rbp_ni_res_pro_agg)
-exprs(rbp_ni_res_pro_agg_norm) <- exprs(rbp_ni_res_pro_agg_norm) + median(log2(exprs(rbp_ni_res_pro_agg)),na.rm=T)
-
-total_us_res_pro_agg_norm <- logCenterNormalise(total_us_res_pro_agg)
-exprs(total_us_res_pro_agg_norm) <- exprs(total_us_res_pro_agg_norm) + median(log2(exprs(total_us_res_pro_agg)),na.rm=T)
-  
-rbp_us_res_pro_agg_norm <- logCenterNormalise(rbp_us_res_pro_agg)
-exprs(rbp_us_res_pro_agg_norm) <- exprs(rbp_us_res_pro_agg_norm) + median(log2(exprs(rbp_us_res_pro_agg)),na.rm=T)
+rbp_as_res_pro_agg_norm <- logCenterNormalise(rbp_as_res_pro_agg)
+exprs(rbp_as_res_pro_agg_norm) <- exprs(rbp_as_res_pro_agg_norm) + median(log2(exprs(rbp_as_res_pro_agg)),na.rm=T)
+pData(rbp_as_res_pro_agg_norm)$Sample_name = gsub("\\_Arsenite","-Arsenite",pData(rbp_as_res_pro_agg_norm)$Sample_name)
 
 # Create plots
-pa <- plotLabelQuant(total_ni_res_pro_agg, log=TRUE,print=F)
-pb <- plotLabelQuant(total_ni_res_pro_agg_norm, log=FALSE,print=F)
+pa <- plotLabelQuant(total_as_res_pro_agg, log=TRUE,print=F,suf="Total")
+pb <- plotLabelQuant(total_as_res_pro_agg_norm, log=FALSE,print=F,suf="Total normalised")
 
-pc <- plotLabelQuant(rbp_ni_res_pro_agg, log=TRUE,print=F)
-pd <- plotLabelQuant(rbp_ni_res_pro_agg_norm, log=FALSE,print=F)
-
-pe <- plotLabelQuant(total_us_res_pro_agg, log=TRUE,print=F)
-pf <- plotLabelQuant(total_us_res_pro_agg_norm, log=FALSE,print=F)
-
-pg <- plotLabelQuant(rbp_us_res_pro_agg, log=TRUE,print=F)
-ph <- plotLabelQuant(rbp_us_res_pro_agg_norm, log=FALSE,print=F)
+pc <- plotLabelQuant(rbp_as_res_pro_agg, log=TRUE,print=F,suf="RBP")
+pd <- plotLabelQuant(rbp_as_res_pro_agg_norm, log=FALSE,print=F,suf="RBP normalised")
 
 # Draw combined plot
 pdf("../plots/Density-plots-before-after-normalisation.pdf",paper="a4r",width=14,height=8)
-grid.arrange(pa$p2,pb$p2,pc$p2,pd$p2,pe$p2,pf$p2,pg$p2,ph$p2,nrow=4)
+g1 = grid.arrange(pa$p2,pb$p2,pc$p2,pd$p2,nrow=2)
 dev.off()
 
-pdf("../plots/Boxplots-BEFORE-normalisation.pdf",paper="a4r",width=14,height=8)
-grid.arrange(pa$p1,pc$p1,pe$p1,pg$p1,nrow=2)
-dev.off()
-
-pdf("../plots/Boxplots-AFTER-normalisation.pdf",paper="a4r",width=14,height=8)
-grid.arrange(pb$p1,pd$p1,pf$p1,ph$p1,nrow=2)
+pdf("../plots/Boxplots-before-after-normalisation.pdf",paper="a4r",width=14,height=8)
+g2 = grid.arrange(pa$p1,pb$p1,pc$p1,pd$p1,nrow=2)
 dev.off()
 
 # Save normalised, protein level data 
-saveRDS(total_ni_res_pro_agg_norm, file="../results/total_ni_res_pro_agg_norm")
-saveRDS(rbp_ni_res_pro_agg_norm, file="../results/rbp_ni_res_pro_agg_norm")
-saveRDS(total_us_res_pro_agg_norm, file="../results/total_us_res_pro_agg_norm")
-saveRDS(rbp_us_res_pro_agg_norm, file="../results/rbp_us_res_pro_agg_norm")
+saveRDS(total_as_res_pro_agg_norm, file="../results/total_as_res_pro_agg_norm")
+saveRDS(rbp_as_res_pro_agg_norm, file="../results/rbp_as_res_pro_agg_norm")
+
+plot(g1)
+plot(g2)
 ```
-From this step, we move on to further QC of the datas using principal components analysis for dimensionality reduction. The main takeaway from this first analysis notebook is that Replicate 4 in the Unstarved vs Starved experiment is a bit ropey, particularly in the RNA binding protein setting. 
-
-
-Notes:
-------
-Things to do with this notebook before closing it  
-1. Evaluate functions but leave them out of the output  
-2. Modify function 'summariseMissing' and 'makeMSNSet' to be less verbose  
-3. Change plotLabel  
+From this step, we move on to further QC of the datas using principal components analysis for dimensionality reduction. Data looks as it should - no questionable samples at this stage. 

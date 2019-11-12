@@ -1,67 +1,177 @@
 ---
-title: "Over-representated GO terms in nominally significant proteins"
-output: html_notebook
+title: "04: Over-representated GO terms in nominally significant proteins"
+author: "Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+editor_options: 
+  chunk_output_type: inline
 ---
 
-Here, we will look at the over-representated GO terms in the "top" proteins according to their estimated changes in RNA binding. We don't detect any significantly over-represented GO terms whatsoever in the proteins with nominal significant changes (p-value < 0.05) in either the Untreated vs starved or Starved vs Insulin comparisons.
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+## 1. Introduction 
+Here, we will look at the over-representated GO terms in the "top" proteins according to their estimated changes in RNA binding. We detect 225 proteins different in cells treated with 100uM NaAs2 and 184 proteins in those cells treated with 400uM NaAs2. We want to see if there is a functional theme to either set of proteins that can shed light on how the cells react to sodium arsenite. We know they trigger heat-shock response and stress granule formation but can we detect any of these proteins that are also RNA-binding proteins. 
 
-```{r 00_Functions-needed}
+```{r 00_Functions-needed, eval=T, echo=F, warning=F}
 
+# Libraries
+library(MSnbase)
+library(tidyr)
+library(dplyr)
+library(goseq)
+
+# -----------------------------  
+# Function	: getEnrichedGO
+# -----------------------------  
+getEnrichedGO <- function(pwf, gene2cat=FALSE, shorten_term=TRUE, ...){
+  
+  if(!missing(gene2cat)){
+    GO.abundance<-goseq(pwf,gene2cat=gene2cat, ...)
+  }
+  else{
+    GO.abundance<-goseq(pwf,"hg38","ensGene", ...)
+  }
+  
+  GO.abundance$BH <-  p.adjust(GO.abundance$over_represented_pvalue, method="BH")
+  if(shorten_term){GO.abundance$short_term <- substr(GO.abundance$term, 1, 30)}
+  return(GO.abundance)
+}
+
+# -----------------------------  
+# Function	: makePWF
+# -----------------------------  
+makePWF <- function(df, sig_col, bias_col, identifier_col){
+  bias <- df[[bias_col]]
+  names(bias) <- df[[identifier_col]]
+  
+  sig_genes <- df[[sig_col]]==TRUE
+  
+  names(sig_genes) <- df[[identifier_col]]
+  print(sum(sig_genes))
+  
+  pwf.counts=nullp(sig_genes, bias.data=bias, plot.fit = F)
+  return(pwf.counts)
+}
+
+# ---------------------------------  
+# Function	: plotGOTerms
+# ---------------------------------  
+plotTerms <- function(terms_df, pwf, gene2cat,
+                      term_col="GO.ID",
+                      target_col="UNIPROTKB",
+                      BH_filter=0.01,
+                      overrep_filter=1, numObs_filter=50,
+                      switch_axes=F, plot_top=10){
+  terms_df$BH <-  p.adjust(terms_df$over_represented_pvalue, method="BH")
+  terms_df$BH[terms_df$BH==0] <- 1E-16
+
+  terms_filtered_df <- terms_df[terms_df$BH <= BH_filter,]
+  terms_filtered_df <- terms_filtered_df[terms_filtered_df$numDEInCat > numObs_filter,]
+  
+  if(nrow(terms_filtered_df)==0){
+    cat("No terms were significantly enriched! Return NULL objects")
+    return(list(plot=NULL,g=NULL))
+  }
+  terms_filtered_df <- addAdjustedOverRep(terms_filtered_df, pwf, gene2cat, term_col, target_col)
+  terms_filtered_df <- terms_filtered_df[terms_filtered_df$adj_over_rep > overrep_filter,]
+  
+  
+  if(switch_axes){
+    terms_filtered_df <- terms_filtered_df[order(terms_filtered_df$adj_over_rep),]
+  }
+  else{
+    terms_filtered_df <- terms_filtered_df[order(-terms_filtered_df$adj_over_rep),]
+  }
+  
+  p <- terms_filtered_df %>% head(plot_top) %>%
+    ggplot(aes(category, log(adj_over_rep,2), fill=log(BH,10))) +
+    geom_bar(stat="identity") + 
+    xlab("") + ylab("Over-representation (Log2)") +
+    scale_fill_continuous(name="BH adj. p-value\n(Log 10)\n", low=cbPalette[3], high="grey30") +
+    my_theme +
+    theme(
+      text=element_text(size=15),
+      plot.title=element_text(hjust=0.5))
+    
+  if(switch_axes){
+    p <- p + coord_flip()
+  }
+  else{
+    p <- p + theme(axis.text.x=element_text(size=12, angle=45, vjust=1, hjust=1))
+  }
+  
+  return(list(plot=p,g=terms_filtered_df))
+}
+
+# -----------------------------  
+# Function	: plotSigTerms
+# -----------------------------  
 plotSigTerms <- function(obj,sig_col="sig"){
-  pwf <- makePWF(obj, sig_col, "mean_expression", "UniprotID")
+  pwf <- makePWF(obj, sig_col, "mean_expression", "uniprot_id")
   #plotPWF(pwf)
   go_all <- getEnrichedGO(pwf, gene2cat=human_go)
   p <- plotTerms(go_all, pwf, human_go)
   print(head(p$g))
   print(p$plot)
+  return(go_all)
 }
 
 ```
 
-
 ```{r 01_Read-in-background-files}
-
-# Functions
-source("../../CamProt_R/Enrichment.R", chdir=TRUE)
 
 # GO terms
 human_go <- readRDS("../shared_files/h_sapiens_go_full.rds")
 
 # Proteomics data
-Starved_vs_Insulin <- read.delim("../results/Untreated_vs_Insulin_RNA_binding_changes.tsv")
-Untreated_vs_Starved <- read.delim("../results/Unstarved_vs_Starved_RNA_binding_changes.tsv")
-
+Ctrl_vs_100uM <- read.delim("../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv")
+Ctrl_vs_400uM <- read.delim("../results/Ctrl-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv")
+As_100_vs_400uM <- read.delim("../results/100-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv")
+  
 #To perform the GO over-representation correctly, we need to adjust for the abundance of the proteins in the cell lysate.
-total_ni_protein_quant <- readRDS("../results/total_ni_res_pro_agg_norm")
-total_us_protein_quant <- readRDS("../results/total_us_res_pro_agg_norm")
+total_as_protein_quant <- readRDS("../results/total_as_res_pro_agg_norm")
+mean_as_expression <- as.data.frame(apply(2^exprs(total_as_protein_quant), 1, mean))
+colnames(mean_as_expression) <- "mean_expression"
 
-mean_ni_exprssion <- as.data.frame(apply(2^exprs(total_ni_protein_quant), 1, mean))
-colnames(mean_ni_exprssion) <- "mean_expression"
-
-mean_us_exprssion <- as.data.frame(apply(2^exprs(total_us_protein_quant), 1, mean))
-colnames(mean_us_exprssion) <- "mean_expression"
 ```
 
 ```{r 02_Set-up-data-for-significance-analysis}
 
-tmp_ni <- Starved_vs_Insulin %>% merge(mean_ni_exprssion, by.x="UniprotID", by.y="row.names") %>%
-  mutate(sig=p_value<0.05, sig_up=(p_value<0.05 & Estimate>0), sig_dw=(p_value<0.05 & Estimate<0)) %>% arrange(BH)
+tmp_100uM <- Ctrl_vs_100uM %>% merge(mean_as_expression, by.x="uniprot_id", by.y="row.names") %>%
+  mutate(sig=P.Value<0.05, sig_up=(P.Value<0.05 & logFC>0), sig_dw=(P.Value<0.05 & logFC<0)) %>% arrange(adj.P.Val)
 
-tmp_us <- Untreated_vs_Starved %>% merge(mean_ni_exprssion, by.x="UniprotID", by.y="row.names") %>%
-  mutate(sig=p_value<0.05, sig_up=(p_value<0.05 & Estimate>0), sig_dw=(p_value<0.05 & Estimate<0)) %>% arrange(BH)
+tmp_400uM <- Ctrl_vs_400uM %>% merge(mean_as_expression, by.x="uniprot_id", by.y="row.names") %>%
+  mutate(sig=P.Value<0.05, sig_up=(P.Value<0.05 & logFC>0), sig_dw=(P.Value<0.05 & logFC<0)) %>% arrange(adj.P.Val)
+
+tmp_100_400uM <- As_100_vs_400uM %>% merge(mean_as_expression, by.x="uniprot_id", by.y="row.names") %>%
+  mutate(sig=P.Value<0.05, sig_up=(P.Value<0.05 & logFC>0), sig_dw=(P.Value<0.05 & logFC<0)) %>% arrange(adj.P.Val)
+
 ```
 
 
 ```{r 03_Plot-significant-GO-terms}
 
-plotSigTerms(tmp_ni, "sig")
-plotSigTerms(tmp_ni, "sig_up")
-plotSigTerms(tmp_ni, "sig_dw")
+p1 = plotSigTerms(tmp_100uM, "sig")
+p2 = plotSigTerms(tmp_100uM, "sig_up")
+p3 = plotSigTerms(tmp_100uM, "sig_dw")
 
-plotSigTerms(tmp_us, "sig")
-plotSigTerms(tmp_us, "sig_up")
-plotSigTerms(tmp_us, "sig_dw")
+p4 = plotSigTerms(tmp_400uM, "sig")
+p5 = plotSigTerms(tmp_400uM, "sig_up")
+p6 = plotSigTerms(tmp_400uM, "sig_dw")
 
+p7 = plotSigTerms(tmp_100_400uM, "sig")
+p8 = plotSigTerms(tmp_100_400uM, "sig_up")
+p9 = plotSigTerms(tmp_100_400uM, "sig_dw")
 ```
+## 2. Conclusions
+From what we can see above, none of the lists of genes have any significant functional themes surrounding them. This is telling us that in this instance, treating cells with NaAs2 at both 100uM and 400uM dosages hasn't had a huge biological impact on the cells. 
 
 
