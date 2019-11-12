@@ -13,7 +13,7 @@ results	| Contains TSV and CSV files containing results of differential expressi
 plots	| Contains figures output from the code - hopefully the titles are self-explanatory 
 shared_files	| Annotation files used in the analysis
 U2OS-Sodium-Arsenite-Experimental-Setup.png	| Experimental diagram  
-README.md	 This file
+README.md	| This file
 
 Thanks!
 
