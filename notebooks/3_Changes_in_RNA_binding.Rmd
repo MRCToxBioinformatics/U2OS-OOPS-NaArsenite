@@ -351,17 +351,17 @@ fit2 <- eBayes(fit2)
 Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs100uM",number = Inf,confint = T)
 de_mod_100uM = modify_output(Ctrl.100uM)
 p_value_100uM <- de_mod_100uM %>% filter(P.Value <= 0.05)
-write.table(p_value_100uM, "../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+write.table(p_value_100uM, "../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
 Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs400uM",number = Inf,confint = T)
 de_mod_400uM = modify_output(Ctrl.400uM)
 p_value_400uM <- de_mod_400uM %>% filter(P.Value <= 0.05)
-write.table(p_value_400uM,"../results/Ctrl-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+write.table(p_value_400uM,"../results/Ctrl-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
 As400.100uM = topTable(fit2, adjust = "BH",coef = "As400vs100uM",number = Inf,confint = T)
 de_mod_100.400uM = modify_output(As400.100uM)
 p_value_100.400uM <- de_mod_100.400uM %>% filter(P.Value <= 0.05) 
-write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.csv",sep="\t",row.names=F,quote=F)
+write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-BLOCK-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
 # Significantly DE proteins - only a few
 de_mod_100uM %>% filter(adj.P.Val <= 0.05)
@@ -396,7 +396,5 @@ lowest_p_100_400uM_proteins <- p_value_100.400uM %>% arrange(P.Value) %>% pull(u
 
 # Plots
 plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-400uM"),],lowest_p_ctrl_100uM_proteins,"Ctrl vs 100uM Arsenite")
-
 plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-100uM"),],lowest_p_ctrl_400uM_proteins,"Ctrl vs 400uM Arsenite")
-
 plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "Ctrl"),],lowest_p_100_400uM_proteins,"100uM vs 400uM Arsenite")
