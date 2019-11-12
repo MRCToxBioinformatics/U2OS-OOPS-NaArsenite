@@ -5,13 +5,15 @@ OOPS analysis of two doses of sodium arsenite treatment (please feel free to upl
 
 
 ## Contents
-1. raw 	: Raw data files from Rayner, sample list and reannotated files from Tom's Python script
-2. notebooks	: Contains *.Rmd files with full code including functions as well as *.pdf files that are code and output without full list of functions used
-3. results	: Contains TSV and CSV files containing results of differential expression analysis. Contail R objects (RDS files) that are data objects that are used in the analysis
-4. plots	: Contains figures output from the code - hopefully the titles are self-explanatory 
-5. shared_files	: Annotation files used in the analysis
-6. U2OS-Sodium-Arsenite-Experimental-Setup.png	: Experimental diagram  
-7. README.md	: This file
+Folder	| Contents
+--------| --------	
+raw 	| Raw data files from Rayner, sample list and reannotated files from Tom's Python script
+notebooks	| Contains *.Rmd files with full code including functions as well as *.pdf files that are code and output without full list of functions used
+results	| Contains TSV and CSV files containing results of differential expression analysis. Contail R objects (RDS files) that are data objects that are used in the analysis
+plots	| Contains figures output from the code - hopefully the titles are self-explanatory 
+shared_files	| Annotation files used in the analysis
+U2OS-Sodium-Arsenite-Experimental-Setup.png	| Experimental diagram  
+README.md	 This file
 
 Thanks!
 
