@@ -108,12 +108,16 @@ combine_esets <- function(total,rbp){
 # Input     : output from 'run_limma'
 # Output    : simplified data frame with results of linear modelling
 #-------------------------------------------------------------------------------
-modify_output <- function(rbps_de,cols=c(14:15,37,52:59)){
+
+
+modify_output <- function(rbps_de,cols=c("Master.Protein.Accessions",
+       "Master.Protein.Descriptions",
+       "logFC", "CI.L", "CI.R", "AveExpr",
+       "t", "P.Value","adj.P.Val","B")){
   rbps_mod = rbps_de[,cols]
   rbps_mod$protein_desc = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"OS="),"[[",1)
   rbps_mod$gene_name = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
   colnames(rbps_mod)[1] = "uniprot_id"
-  rbps_mod = rbps_mod[,c(1,13,12,3:11)]
   return(rbps_mod)
 }
 
@@ -243,21 +247,18 @@ plotTop10<-function(combined_exprs,lowest_p_proteins,suf){
             filter(uniprotID %in% lowest_p_proteins) %>%
             arrange(uniprotID, Condition, Type)
   test_df$Type = factor(test_df$Type,levels = c("RBPS","Total"))
+  test_df$Entry.name <- gsub("_HUMAN", "", test_df$Entry.name)
   
-  pdf(paste("../plots/",paste("Top-10-proteins_",suf,".pdf",sep=""),sep="/"),paper="a4r",width=12,height=8)
-  n_pages = 2
-  for (i in seq_len(n_pages)) {
-      print(i)
-        gp = ggplot(test_df,aes(Condition, Intensity, colour=Replicate, group=Replicate)) +
-        geom_point() +
-        geom_line() +
-        xlab("") +
-        ylab("Protein abundance (log2)") +
-        theme(text=element_text(size=12),legend.position="bottom",axis.text.x = element_text(size=10),title = element_text(vjust = 1,hjust=0.5,size=12))+labs(title=suf)+
-        facet_wrap_paginate(~Entry.name:Type, ncol=4, nrow=3, page=i,scales = "fixed")
-        plot(gp)
-  }
-  dev.off()
+  test_df %>%
+    ggplot(aes(Condition, Intensity)) +
+    geom_point() +
+    stat_summary(fun.y="mean", geom="line", aes(group=Type)) +
+    facet_grid(Entry.name~Type,scales = "free_y") +
+    xlab("") +
+    ylab("Protein abundance (log2)") +
+    theme(axis.text.x=element_text(size=12, angle=90, vjust=0.5, hjust=1),
+          legend.position="bottom",
+          title = element_text(vjust = 1,hjust=0.5,size=12))+labs(title=suf)
 }
 
 ```
@@ -287,7 +288,6 @@ Initially, we perform this analysis for each of the 4 datasets separately.
 It is relatively easy to perform a pairwise comparison between treated and untreated samples either in the RBP or Total proteome. What about changes in RNA binding? For this, we need combine the two MSnSets into a single ExpressionSet. We start by intersecting proteins within the Arsenite experiments so we can compare just those proteins that are captures across both total and RBP datasets. 
 
 ```{r 3a_Intersecting-proteins}
-
 intersecting_as_proteins <- intersect(rownames(total_as_protein_quant), rownames(oops_as_protein_quant))
 print(paste("Number of RBPs also captured in the Total Proteome for Control vs Arsenite treated samples is", length(intersecting_as_proteins)),sep="")
 
@@ -307,27 +307,63 @@ The we run `limma` on the combined intensities and this time test for a signfica
 
 ```{r 3c_Limma-on-combined-data}
 
-# Ctrl-vs-100umArsenite
-as_rbps_de_100uM = run_limma(combined_as_intensities,"condition100uM-Arsenite:typeOOPS")
-as_rbps_de_mod_100uM = modify_output(as_rbps_de_100uM)
-as_rbps_p_value_100uM <- as_rbps_de_mod_100uM %>% filter(P.Value <= 0.05) 
-write_csv(as_rbps_p_value_100uM, path = "../results/Ctrl-vs-100uM-Arsenite-Treated-rawp-le-0.05.csv")
+# Create a design matrix
+treat <- paste(combined_as_intensities$Condition, combined_as_intensities$Type, sep=".") 
+treat<- gsub("\\-",".",treat)
+design2 = model.matrix(~0+treat)
 
-# Ctrl-vs-400umArsenite
-as_rbps_de_400uM = run_limma(combined_as_intensities,"condition400uM-Arsenite:typeOOPS")
-as_rbps_de_mod_400uM = modify_output(as_rbps_de_400uM)
-as_rbps_p_value_400uM <- as_rbps_de_mod_400uM %>% filter(P.Value <= 0.05) 
-write_csv(as_rbps_p_value_400uM, path = "../results/Ctrl-vs-400uM-Arsenite-Treated-rawp-le-0.05.csv")
+# Calculate correlation between replicates
+corfit <- duplicateCorrelation(combined_as_intensities,design2,block=combined_as_intensities$Rep)
 
+# Fit a linear model to include a block and correlation
+fit <- lmFit(combined_as_intensities,design2,correlation=corfit$consensus)
+
+# Create a vector to extract contrasts
+cm <- makeContrasts(
+  Ctrlvs100uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
+  Ctrlvs400uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS),
+  As400vs100uM = (treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
+  levels=design2)
+
+# Extract contrasts from the fitted linear model
+fit2 <- contrasts.fit(fit, cm)
+
+# Calculating the F-statistic
+fit2 <- eBayes(fit2)
+
+# Extracting the top hits for each contrast
+Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs100uM",number = Inf,confint = T)
+de_mod_100uM = modify_output(Ctrl.100uM)
+p_value_100uM <- de_mod_100uM %>% filter(P.Value <= 0.05)
+write.table(p_value_100uM, "../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
+
+Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs400uM",number = Inf,confint = T)
+de_mod_400uM = modify_output(Ctrl.400uM)
+p_value_400uM <- de_mod_400uM %>% filter(P.Value <= 0.05)
+write.table(p_value_400uM,"../results/Ctrl-vs-400uM-Arsenite-Treated-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
+
+As400.100uM = topTable(fit2, adjust = "BH",coef = "As400vs100uM",number = Inf,confint = T)
+de_mod_100.400uM = modify_output(As400.100uM)
+p_value_100.400uM <- de_mod_100.400uM %>% filter(P.Value <= 0.05) 
+write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
+
+# Significantly DE proteins - only a few
+de_mod_100uM %>% filter(adj.P.Val <= 0.05)
+de_mod_400uM %>% filter(adj.P.Val <= 0.05)
+de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
+
+saveRDS(Ctrl.100uM, "../results/Ctrl.100uM.rds")
+saveRDS(Ctrl.400uM, "../results/Ctrl.400uM.rds")
+saveRDS(As400.100uM, "../results/As400.100uM.rds")
 ```
 We are also interested in working out if there is any difference between the 100uM and 400uM treated cells. I have set the design up slightly differently here incorporating the replicate number as a blocking factor. Blocking can be applied in any situation where there are batch effects or where the experiment has been conducted in blocks. The treatments can be adjusted for differences between the blocks by using a model formula of the form  
 
 **_design <- model.matrix(~Block+Treatment)_**  
 
+
 ```{r 3d_Alternate-design}
 
 # Create a design matrix
-pData(combined_as_intensities)$Rep = sapply(strsplit(pData(combined_as_intensities)$Sample_name,"\\_"),"[[",2)
 treat <- paste(combined_as_intensities$Condition, combined_as_intensities$Type, sep=".") 
 treat = gsub("\\-",".",treat)
 design2 = model.matrix(~0+treat)
@@ -336,7 +372,7 @@ design2 = model.matrix(~0+treat)
 corfit <- duplicateCorrelation(combined_as_intensities,design2,block=combined_as_intensities$Rep)
 
 # Fit a linear model to include a block and correlation
-fit <- lmFit(combined_as_intensities,design2,block=pData(combined_as_intensities)$Rep,correlation=corfit$consensus)
+fit <- lmFit(combined_as_intensities,design2,block=pData(combined_as_intensities)$Replicate,correlation=corfit$consensus)
 
 # Create a vector to extract contrasts
 cm <- makeContrasts(
@@ -372,12 +408,13 @@ de_mod_100uM %>% filter(adj.P.Val <= 0.05)
 de_mod_400uM %>% filter(adj.P.Val <= 0.05)
 de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
 ```
+
 While there are several proteins whose p-value is significant, only a few survive multiple testing correction (shown above). Of these, there doesn't seem to be much in the way of a functional theme. Hence, there isn't much to go on for GO enrichment analysis. We could use the lists based just on raw p-value and see if we have any luck with them. 
 
 ## 4. Plotting expression of Top 10 proteins across studies
 This is to see whether we have a reason for not spotting any DE proteins. Looking at the plots, it is pretty clear that the differences between treatments is pretty minimal i.e the trend lines are not very extreme and only in a few cases are the trend lines really varied between Total proteome and RBP-ome.  
 
-```{r 4_Plotting-expression-data-per-protein}
+```{r 4_Plotting-expression-data-per-protein, fig.width=12, fig.height=12}
 
 # Combining Total and RBP data : AS
 total_as_exprs <- makeLongExprs(total_as_protein_quant,intersecting_as_proteins)
@@ -391,7 +428,6 @@ combined_as_exprs <- combined_as_exprs %>% merge(protein_info, by.x="uniprotID",
 # Renaming the levels for better plotting
 library(plyr)
 combined_as_exprs$Condition = revalue(combined_as_exprs$Condition, c("X400uM.Arsenite"="As-400uM", "X100uM.Arsenite"="As-100uM"))
-str(combined_as_exprs)
 
 # Top 10 proteins from both comparisons
 lowest_p_ctrl_100uM_proteins <- p_value_100uM %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(10)
@@ -399,6 +435,14 @@ lowest_p_ctrl_400uM_proteins <- p_value_400uM %>% arrange(P.Value) %>% pull(unip
 lowest_p_100_400uM_proteins <- p_value_100.400uM %>% arrange(P.Value) %>% pull(uniprot_id) %>% head(10)
 
 # Plots
-plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-400uM"),],lowest_p_ctrl_100uM_proteins,"Ctrl-vs-100uM-Arsenite")
-plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "As-100uM"),],lowest_p_ctrl_400uM_proteins,"Ctrl-vs-400uM-Arsenite")
-plotTop10(combined_as_exprs[-which(combined_as_exprs$Condition == "Ctrl"),],lowest_p_100_400uM_proteins,"100uM-vs-400uM-Arsenite")
+plotTop10(combined_as_exprs,lowest_p_ctrl_100uM_proteins,"Ctrl vs 100uM Arsenite")
+
+plotTop10(combined_as_exprs,lowest_p_ctrl_400uM_proteins,"Ctrl vs 400uM Arsenite")
+
+
+plotTop10(combined_as_exprs,lowest_p_100_400uM_proteins,"100uM vs 400uM Arsenite")
+```
+```{r}
+plotTop10(combined_as_exprs,c("Q7KZF4", "Q8NC51"),"")
+```
+

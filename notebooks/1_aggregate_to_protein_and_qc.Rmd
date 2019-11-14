@@ -49,6 +49,7 @@ source("../../CamProt_R/Utility.R", chdir=TRUE)
 # Source file that contains a list of glycoproteins that have been identified in previous OOPS experiments. I'm not convinced about removing these proteins from the study at the ourset.
 glycoproteins <- read.table("../shared_files/glycoproteins.tsv", sep="\t", header=TRUE)
 glycoproteins <- glycoproteins %>% pull(protein) %>% as.character() %>% unique()
+
 ```
 
 ```{r 01_Functions, eval = T, echo = F}
@@ -170,8 +171,8 @@ The function 'parse_features' reads in a peptide-level data file and processes i
 ```{r 02_Peptide-level-quantification}
 
 # Parsing input files
-files = grep("reannot",list.files("../raw",full.names = T),value=T)
-suff = gsub("_reannot.txt|_peptides","",sapply(strsplit(files,"/"),"[[",3))
+files = grep("peptidegroups.txt",list.files("../raw",full.names = T),value=T)
+suff = gsub("_peptidegroups.txt","",basename(files))
 
 # Process all experimental data
 for(f in 1:length(files)){
@@ -203,8 +204,8 @@ c. pData : (phenotype Data) Contains annotation information about each sample in
 # Read in experimental set-up data
 samples_as_inf <- "../raw/samples.tsv"
 
-total_as_res <- makeMSNSet(total_arsenite_df, samples_as_inf)
-rbp_as_res <- makeMSNSet(rbp_arsenite_df, samples_as_inf)
+total_as_res <- makeMSNSet(total_arsenite_df_noglyc, samples_as_inf)
+rbp_as_res <- makeMSNSet(rbp_arsenite_df_noglyc, samples_as_inf)
 
 # Check relative quantification in data
 q1 <- plotLabelQuant(total_as_res, log=T,print=F,suf="Total")
@@ -241,8 +242,8 @@ You might have noticed that while we created the MSnSet, we also did a tally for
 
 Experiment  | Raw peptide data | Aggregated peptide data  | 
 ------------|---------------------|-------------------------------------|
-Control vs NaAs2 | 1113 peptides |0 peptides |
-Control vs NaAs2  | 898 peptides |0 peptides |
+Control vs NaAs2 | 1039 peptides |0 peptides |
+Control vs NaAs2  | 830 peptides |0 peptides |
 
 Once we aggregate across modifications, there are no peptides where all 10 values are missing. They must have all been peptides with two or more alternate modifications that have now been rolled into one. However, there are still a small number of peptides that have some missing values but mostly in one or 2 samples only as shown in the plot below. The grey bars display missing values and black display non-missing values.The plots only display those peptides with one or more missing values. Peptides with no missing values are not shown. Missing values are only affecting treated samples, not control ones.
 
@@ -253,7 +254,7 @@ c = 1
 
 pdf("../plots/Missing-value-heatmaps-peptide-level-data.pdf",paper="a4r",width=14,height=8)
 
-for(i in list(total_as_res_pep_agg,rbp_as_res_pep_agg)){
+for(i in list(total_as_res_pep_agg, rbp_as_res_pep_agg)){
   if(length(summariseMissing(i))>=3){
     plotMissing(i,cexCol=0.8,srtCol=45,main = names[c])
   }
@@ -273,6 +274,8 @@ p2=plotPepCounts(rbp_as_res_pep_agg,"RBP")
 pdf("../plots/Distribution-of-peptides-per-protein.pdf",paper="a4r",width=14,height=8)
 grid.arrange(p1,p2,ncol=2)
 dev.off()
+
+grid.arrange(p1,p2,ncol=2)
 ```
 So we have 37-42% "one-hit" wonders across the experiments (Total (37.3%),RBP (42.2%). We'll leave these in for now as we'd be taking 40% of the data out if we deleted them but we could consider excluding these as we have less confident abundance estimates here. 
 
@@ -327,18 +330,18 @@ pd <- plotLabelQuant(rbp_as_res_pro_agg_norm, log=FALSE,print=F,suf="RBP normali
 
 # Draw combined plot
 pdf("../plots/Density-plots-before-after-normalisation.pdf",paper="a4r",width=14,height=8)
-g1 = grid.arrange(pa$p2,pb$p2,pc$p2,pd$p2,nrow=2)
+grid.arrange(pa$p2,pb$p2,pc$p2,pd$p2,nrow=2)
 dev.off()
 
 pdf("../plots/Boxplots-before-after-normalisation.pdf",paper="a4r",width=14,height=8)
-g2 = grid.arrange(pa$p1,pb$p1,pc$p1,pd$p1,nrow=2)
+grid.arrange(pa$p1,pb$p1,pc$p1,pd$p1,nrow=2)
 dev.off()
 
 # Save normalised, protein level data 
 saveRDS(total_as_res_pro_agg_norm, file="../results/total_as_res_pro_agg_norm")
 saveRDS(rbp_as_res_pro_agg_norm, file="../results/rbp_as_res_pro_agg_norm")
 
-plot(g1)
-plot(g2)
+grid.arrange(pa$p2,pb$p2,pc$p2,pd$p2,nrow=2)
+grid.arrange(pa$p1,pb$p1,pc$p1,pd$p1,nrow=2)
 ```
 From this step, we move on to further QC of the datas using principal components analysis for dimensionality reduction. Data looks as it should - no questionable samples at this stage. 

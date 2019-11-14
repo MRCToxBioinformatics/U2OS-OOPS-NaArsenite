@@ -1,11 +1,11 @@
-Tag	Sample_name
-126	Ctrl_1
-127N	Ctrl_2
-127C	Ctrl_3
-128N	100uM_Arsenite_1
-128C	100uM_Arsenite_2
-129N	100uM_Arsenite_3
-129C	100uM_Arsenite_4
-130N	400uM_Arsenite_1
-130C	400uM_Arsenite_2
-131	400uM_Arsenite_3
+Tag	Sample_name	Condition	Replicate
+126	Ctrl_1	Ctrl	1
+127N	Ctrl_2	Ctrl	2
+127C	Ctrl_3	Ctrl	3
+128N	100uM_Arsenite_1	Arsenite100	1
+128C	100uM_Arsenite_2	Arsenite100	2
+129N	100uM_Arsenite_3	Arsenite100	3
+129C	100uM_Arsenite_4	Arsenite100	4
+130N	400uM_Arsenite_1	Arsenite400	1
+130C	400uM_Arsenite_2	Arsenite400	2
+131	400uM_Arsenite_3	Arsenite400	3

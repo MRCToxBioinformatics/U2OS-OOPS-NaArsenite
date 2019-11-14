@@ -33,21 +33,21 @@ source("../../CamProt_R/Utility.R")
 # Aim       : Function to plot PCAs for a given set of samples
 #--------------------------------------------------------------
 plotSamplePCA <- function(obj){
-  .data <- exprs(obj)
-  colnames(.data) <- pData(obj)$Sample_name
+  .data <- obj %>% filterNA() %>% exprs()
   
   pca <- prcomp(t(.data))
   
   loadings <- pca$sdev^2
-  #plot(loadings/sum(loadings),col="red")
+  #plot(loadings/sum(loadings))
   
   projections <- data.frame(pca$x) %>%
-    tibble::rownames_to_column("sample") %>% #Convert rownames to a column
-    separate(sample, into=c("Condition", "Replicate"),sep="_")
+    merge(pData(obj), by='row.names') %>%
+    tibble::rownames_to_column("sample")
   
   p1 <- projections %>%
-    ggplot(aes(PC1, PC2, shape=Condition, colour=Replicate)) +
-    geom_point(size=3)
+    ggplot(aes(PC1, PC2, shape=Replicate, colour=Condition)) +
+    geom_point(size=5) +
+    my_theme
   
   p2 <- p1 + aes(PC3, PC4)+theme(legend.position = "none")
   p3 <- p1 + aes(PC5, PC6)+theme(legend.position = "none")
@@ -59,6 +59,7 @@ plotSamplePCA <- function(obj){
   pt = arrangeGrob(p1,p2,p3,nrow=2,layout_matrix = rbind(c(1,1),c(2,3)))
   return(list(l = loadings,pca=pt))
 }
+
 
 #--------------------------------------------------------------
 # Function  : plotCVs
@@ -98,21 +99,28 @@ We start the process by plotting PCAs - we draw them in pairs PC1&2, PC3&4, PC5&
 names = c("TotalProt-Control-vs-NaAs2-Treated","RBPs-Control-vs-NaAs2-Treated")
 c = 1
 
-for(i in list(total_as_protein_quant,oops_as_protein_quant)){
+for(i in list(total_as_protein_quant, oops_as_protein_quant)){
   p = plotSamplePCA(i)
-  pdf(paste("../plots/",names[c],"_PCA-on-normalised-data.pdf",sep=""),paper="a4r",width=14,height=8)
+  pdf(paste("../plots/",names[c],"_PCA-on-normalised-data.pdf",sep=""),
+      paper="a4r",width=14,height=8)
   plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
   plot(p$pca)
   dev.off()
+  plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+  plot(p$pca)
   c = c+1
 }
 
 ```
+
+
 **_1. Total Protein : Control vs Arsenite treated_**  
-In this case, Replicate 1 of the Control seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 62%). PC2 seems to approximately separate the treatment vs control samples (variation 10%). We have no real reason to remove Ctrl 1 so we will keep it in for now. 
+In this case, Replicate 1 of the Control seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 62%), alongside the difference between Ctrl and Arsenite.
 
 **_2. RBPs : Control vs Arsenite treated_**    
-In this case, Replicate 1 of the Control seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 62%). PC2 seems to approximately separate the treatment vs control samples (variation 10%). We have no real reason to remove Ctrl 1 so we will keep it in for now. 
+In this case, Replicate 1 of the Control seems to be very different to the rest of the samples and that's what PC1 is captuting (variation 53%). PC1 and PC2 seem to approximately separate the treatment vs control samples (variation 53% & 10%, respectively).
+
+We have no real reason to remove Ctrl 1 so we will keep it in for now. 
 
 Overall, the condition does not appear to have a large impact on relative protein abundance. Note that this does not mean there isn't a change in absolute protein abundance. Also, if the quantification was very noisy, we would also expect this to mask the biological signal. We'll check % CVs below to assess quantification noise.
 
@@ -158,6 +166,8 @@ for(i in list(total_as_protein_quant_nd,oops_as_protein_quant_nd)){
   plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
   plot(p$pca)
   dev.off()
+  plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+  plot(p$pca)
   c = c+1
 }
 
@@ -243,5 +253,5 @@ dev.off()
 plot(g)
 
 ```
-The CVs look as good as we would expect for TMT. 50% of the CVs should be < 0.2 after normalisation - [see here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4361338/). Also the OOPS data is not notably more variable which is good to see.
+The CVs look as good as we would expect for TMT. 50% of the CVs should be < 0.2 after normalisation - [see here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4361338/). Also the OOPS data is *not* notably more variable which is good to see.
 
