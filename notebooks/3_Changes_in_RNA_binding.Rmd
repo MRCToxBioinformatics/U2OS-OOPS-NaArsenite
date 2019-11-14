@@ -305,57 +305,94 @@ pData(combined_as_intensities)$Condition = factor(pData(combined_as_intensities)
 
 The we run `limma` on the combined intensities and this time test for a signficant interaction coefficient. There are 224 proteins differentially expressed in cells treated with 100uM NaAs2 relative to Control and similarly, there are 184 proteins differentially expressed in cells treated with 400uM NaAs2 relative to Control.
 
+```{r}
+coefficients=c("Condition100uM.Arsenite.TypeOOPS",
+                                          "Condition400uM.Arsenite.TypeOOPS")
+
+  fit$t <- NULL
+  fit$p.value <- NULL
+  fit$lods <- NULL
+  fit$F <- NULL
+  fit$F.p.value <- NULL
+  ncoef <- NCOL(fit$coefficients)
+  if (!is.null(contrasts)) {
+      contrasts <- as.matrix(contrasts)
+      rn <- rownames(contrasts)
+      cn <- colnames(fit$coefficients)
+      if (!is.null(rn) && !is.null(cn) && any(rn != cn)) 
+          warning("row names of contrasts don't match col names of coefficients")
+  }
+  else {
+      ncont <- length(coefficients)
+      contrasts <- diag(ncoef)
+      rownames(contrasts) <- colnames(contrasts) <- colnames(fit$coefficients)
+      contrasts <- contrasts[, coefficients, drop = FALSE]
+  }
+```
+
 ```{r 3c_Limma-on-combined-data}
 
-# Create a design matrix
-treat <- paste(combined_as_intensities$Condition, combined_as_intensities$Type, sep=".") 
-treat<- gsub("\\-",".",treat)
-design2 = model.matrix(~0+treat)
 
+# Create a design matrix
+#treat <- paste(combined_as_intensities$Condition, combined_as_intensities$Type, sep=".") 
+#design = model.matrix(~0+treat)
+##treat = gsub("\\-",".",treat)
+condition <- combined_as_intensities$Condition
+type <- combined_as_intensities$Type
+design<-model.matrix(~0+condition*type)
+colnames(design) <- gsub("[:-]", ".", colnames(design))
 # Calculate correlation between replicates
-corfit <- duplicateCorrelation(combined_as_intensities,design2,block=combined_as_intensities$Rep)
+corfit <- duplicateCorrelation(combined_as_intensities,design2,block=combined_as_intensities$Replicate)
 
 # Fit a linear model to include a block and correlation
-fit <- lmFit(combined_as_intensities,design2,correlation=corfit$consensus)
+fit <- lmFit(combined_as_intensities,design,correlation=corfit$consensus)
 
 # Create a vector to extract contrasts
-cm <- makeContrasts(
-  Ctrlvs100uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
-  Ctrlvs400uM = (treatCtrl.Total-treatCtrl.OOPS)-(treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS),
-  As400vs100uM = (treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS)-(treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS),
-  levels=design2)
+#cm <- makeContrasts(
+#  Ctrlvs100uM = (treat100uM.Arsenite.Total-treatCtrl.Total)-(treat100uM.Arsenite.OOPS-treatCtrl.OOPS),
+#  Ctrlvs400uM = (treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS)-(treatCtrl.Total-treatCtrl.OOPS),
+#  As400vs100uM = (treat100uM.Arsenite.Total-treat100uM.Arsenite.OOPS)-(treat400uM.Arsenite.Total-treat400uM.Arsenite.OOPS),
+#  levels=design)
+
+
 
 # Extract contrasts from the fitted linear model
-fit2 <- contrasts.fit(fit, cm)
+fit2 <- contrasts.fit(fit, coefficients=c("condition100uM.Arsenite.typeOOPS",
+                                          "condition400uM.Arsenite.typeOOPS"))
 
 # Calculating the F-statistic
 fit2 <- eBayes(fit2)
 
 # Extracting the top hits for each contrast
-Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs100uM",number = Inf,confint = T)
+Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "condition100uM.Arsenite.typeOOPS",number = Inf,confint = T)
 de_mod_100uM = modify_output(Ctrl.100uM)
 p_value_100uM <- de_mod_100uM %>% filter(P.Value <= 0.05)
 write.table(p_value_100uM, "../results/Ctrl-vs-100uM-Arsenite-Treated-BLOCK-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
-Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "Ctrlvs400uM",number = Inf,confint = T)
+Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "condition400uM.Arsenite.typeOOPS",number = Inf,confint = T)
 de_mod_400uM = modify_output(Ctrl.400uM)
 p_value_400uM <- de_mod_400uM %>% filter(P.Value <= 0.05)
 write.table(p_value_400uM,"../results/Ctrl-vs-400uM-Arsenite-Treated-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
-As400.100uM = topTable(fit2, adjust = "BH",coef = "As400vs100uM",number = Inf,confint = T)
-de_mod_100.400uM = modify_output(As400.100uM)
-p_value_100.400uM <- de_mod_100.400uM %>% filter(P.Value <= 0.05) 
-write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
+#As400.100uM = topTable(fit2, adjust = "BH",coef = "As400vs100uM",number = Inf,confint = T)
+#de_mod_100.400uM = modify_output(As400.100uM)
+#p_value_100.400uM <- de_mod_100.400uM %>% filter(P.Value <= 0.05) 
+#write.table(p_value_100.400uM,"../results/100-vs-400uM-Arsenite-Treated-rawp-le-0.05.tsv",sep="\t",row.names=F,quote=F)
 
 # Significantly DE proteins - only a few
 de_mod_100uM %>% filter(adj.P.Val <= 0.05)
 de_mod_400uM %>% filter(adj.P.Val <= 0.05)
-de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
+#de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
 
 saveRDS(Ctrl.100uM, "../results/Ctrl.100uM.rds")
 saveRDS(Ctrl.400uM, "../results/Ctrl.400uM.rds")
-saveRDS(As400.100uM, "../results/As400.100uM.rds")
+#saveRDS(As400.100uM, "../results/As400.100uM.rds")
 ```
+```{r}
+Ctrl.400uM["P10515",] %>% modify_output()
+plotTop10(combined_as_exprs,c("P10515"),"")
+```
+
 We are also interested in working out if there is any difference between the 100uM and 400uM treated cells. I have set the design up slightly differently here incorporating the replicate number as a blocking factor. Blocking can be applied in any situation where there are batch effects or where the experiment has been conducted in blocks. The treatments can be adjusted for differences between the blocks by using a model formula of the form  
 
 **_design <- model.matrix(~Block+Treatment)_**  
@@ -409,6 +446,9 @@ de_mod_400uM %>% filter(adj.P.Val <= 0.05)
 de_mod_100.400uM %>% filter(adj.P.Val <= 0.05)
 ```
 
+
+
+
 While there are several proteins whose p-value is significant, only a few survive multiple testing correction (shown above). Of these, there doesn't seem to be much in the way of a functional theme. Hence, there isn't much to go on for GO enrichment analysis. We could use the lists based just on raw p-value and see if we have any luck with them. 
 
 ## 4. Plotting expression of Top 10 proteins across studies
@@ -442,7 +482,12 @@ plotTop10(combined_as_exprs,lowest_p_ctrl_400uM_proteins,"Ctrl vs 400uM Arsenite
 
 plotTop10(combined_as_exprs,lowest_p_100_400uM_proteins,"100uM vs 400uM Arsenite")
 ```
+
 ```{r}
 plotTop10(combined_as_exprs,c("Q7KZF4", "Q8NC51"),"")
+
+
+
+
 ```
 

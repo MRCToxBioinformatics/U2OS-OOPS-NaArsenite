@@ -1,0 +1,134 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Here, we take the results from limma and look for GO functional groups which show trends for concordant
+
+
+
+```{r}
+library(gage)
+
+Ctrl.100uM <- readRDS("../results/Ctrl.100uM.rds")
+Ctrl.400uM <- readRDS("../results/Ctrl.400uM.rds")
+Ctrl.400uM[,45:52] %>% tibble::rownames_to_column() %>% arrange(desc(logFC))
+Ctrl.400uM[,45:52] %>% arrange(desc(logFC)) %>% tail()
+
+Ctrl.400uM
+```
+
+```{r}
+human_go <- readRDS("../shared_files/h_sapiens_go_full.rds")
+
+translation_init_activity <- human_go %>% filter(GO.ID=='GO:0003743') %>% pull(UNIPROTKB)
+translation_elong_activity <- human_go %>% filter(GO.ID=='GO:0003746') %>% pull(UNIPROTKB)
+translation_term_activity <- human_go %>% filter(GO.ID=='GO:0008079') %>% pull(UNIPROTKB)
+tRNA_AA <- human_go %>% filter(GO.ID=='GO:0004812') %>% pull(UNIPROTKB)
+translocon <- human_go %>% filter(GO.ID=='GO:0006616') %>% pull(UNIPROTKB)
+
+gotoi <- list(translation_init_activity, translation_elong_activity,
+              translation_term_activity, tRNA_AA, translocon )
+names(gotoi) <- c('GO:0003743', 'GO:0003746', 'GO:0008079', 'GO:0004812', 'GO:0006616')
+print(gotoi)
+
+all_go_terms <- human_go %>% filter(UNIPROTKB %in% rownames(Ctrl.400uM)) %>%
+  pull(TERM) %>% unique()
+
+all_go <- vector("list", length=length(all_go_terms))
+names(all_go) <- all_go_terms
+
+for(x in all_go_terms){
+  all_go[[x]] <- human_go %>% filter(TERM==x) %>% pull(UNIPROTKB)
+}
+
+print(head(all_go,1))
+```
+
+
+```{r}
+
+ranks <- rev(sort(Ctrl.100uM$logFC))
+names(ranks) <- rownames(Ctrl.100uM)
+head(ranks)
+
+barplot(ranks)
+
+fgseaRes <- fgsea(all_go, ranks, minSize=15, maxSize = 500, nperm=1000)
+head(fgseaRes[order(pval, -abs(NES)), ], n=10)
+
+gotoi %>% lapply(function(x){
+  plotEnrichment(x, ranks)
+})
+
+head(fgseaRes[order(pval, -abs(NES)), ], n=10)$pathway %>% lapply(function(x){
+  plotEnrichment(all_go[[x]], ranks) + ggtitle(x)
+})
+
+plot(ranks)
+```
+```{r}
+fgseaRes %>% arrange(pval) %>% filter(grepl("Ribosome", pathway, ignore.case=TRUE))
+fgseaRes %>% arrange(pval) %>% filter(grepl("Endoplasmic", pathway, ignore.case=TRUE))
+fgseaRes %>% arrange(pval) %>% filter(grepl("Translation", pathway, ignore.case=TRUE))
+```
+
+```{r}
+
+
+
+plot_foi_trends <- function(obj, foi){
+  foi_proteins <- all_go[[foi]]
+    
+  p <- obj %>%
+    mutate(sig=ifelse(adj.P.Val<0.1, "sig.", "not sig.")) %>% # add "sig" column
+    mutate(foi=Master.Protein.Accessions %in% foi_proteins) %>%
+    arrange(foi) %>%
+    ggplot(aes(logFC, -log10(P.Value), colour=foi, shape=sig)) +
+    geom_point() +
+    scale_colour_manual(values=c("black", cbPalette[6]), name="FOI") +# manually adjust colours
+    scale_size_manual(values=c(1,2), name="FOI")  +# manually adjust sizes
+    scale_size_discrete(name="Sig. (10% FDR)") +
+    ggtitle(foi)
+  
+  print(p)
+  
+  print(plotEnrichment(all_go[[foi]], ranks) +
+  ggtitle(foi))
+  
+  invisible(p)
+}
+
+
+plot_foi_trends(Ctrl.100uM, 'regulation of translation')
+plot_foi_trends(Ctrl.100uM, 'tRNA aminoacylation for protein translation')
+plot_foi_trends(Ctrl.100uM, 'structural constituent of ribosome')
+plot_foi_trends(Ctrl.100uM, 'endoplasmic reticulum unfolded protein response')
+
+
+```
+
+
+```{r}
+topUp <- fgseaRes %>% 
+    filter(ES > 0) %>% 
+    top_n(10, wt=-pval)
+topDown <- fgseaRes %>% 
+    filter(ES < 0) %>% 
+    top_n(10, wt=-pval)
+topPathways <- bind_rows(topUp, topDown) %>% 
+    arrange(-ES)
+x <- plotGseaTable(all_go[topPathways$pathway], 
+                   gseaParam = 0.5,
+              ranks, 
+              fgseaRes)
+str(x)
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
