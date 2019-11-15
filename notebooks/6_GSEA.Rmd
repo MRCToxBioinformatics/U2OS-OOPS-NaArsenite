@@ -161,18 +161,20 @@ plot_foi_trends(Ctrl.100uM, 'endoplasmic reticulum unfolded protein response')
 ```
 
 
-```{r}
+```{r 4c. Ranking-top-enriched-depleted-genesets}
+
 topUp <- fgseaRes %>% 
     filter(ES > 0) %>% 
     top_n(10, wt=-pval)
+
 topDown <- fgseaRes %>% 
     filter(ES < 0) %>% 
     top_n(10, wt=-pval)
+
 topPathways <- bind_rows(topUp, topDown) %>% 
     arrange(-ES)
-x <- plotGseaTable(all_go[topPathways$pathway], 
-                   gseaParam = 0.5,
-              ranks, 
-              fgseaRes)
+
+
+x <- plotGseaTable(all_go[topPathways$pathway], gseaParam = 0.5, ranks, fgseaRes)
 str(x)
 ```
