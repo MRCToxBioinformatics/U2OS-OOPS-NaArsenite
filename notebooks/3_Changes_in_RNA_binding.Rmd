@@ -1,6 +1,6 @@
 ---
 title: "03: Changes in RNA Binding"
-author: "Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
+author: "Mariavittoria Pizzinga, Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   pdf_document:
