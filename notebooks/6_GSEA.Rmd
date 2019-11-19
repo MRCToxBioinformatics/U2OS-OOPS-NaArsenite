@@ -19,9 +19,9 @@ knitr::opts_chunk$set(fig.width=8,fig.height=6,warning=FALSE, message=FALSE,tidy
 ## 1. Introduction 
 Since we don't have any unifying functional themes for the proteins in our analysis, we use Gene Set Enrichment Analysis (GSEA) to work out if there are any genesets with which are data aligns. The goal of GSEA is to determine whether members of a gene set S (in our case proteins with p-value < 0.05), tend to occur toward the top (or bottom) of the list L, in which case the gene set is correlated with the phenotypic class distinction. In our case, this list L could be things like "Amino acyl transferase genes", "Unfolded protein response genes" and so on. 
 
-As a process, we would first rank our list of DE genes either by fold change or by p-value or by log odds score (B) and then pick a gene set we are interested in comparing it to eg: AAtransferases. We start at the top of our ranked list. If the protein at the top of our list is in the AAtransferase list, then a positive number gets added to the running total score. Then we move to the next protein and if that one is also in the AAtransferase list, the score goes up, else the score goes down. Hence you see the craggy peaks in the line graphs depicted below. The vertical bars in the flat line at the top of each of the figures below represent a protein/gene from our list. 
+As a process, we would first rank our list of DE genes either by fold change or by p-value or by log odds score (B) and then pick a gene set we are interested in comparing it to eg: AAtransferases. We start at the top of our ranked list. If the protein at the top of our list is in the AAtransferase list, then a positive number gets added to the running total score. Then we move to the next protein and if that one is also in the AAtransferase list, the score goes up, else the score goes down. Hence you see the craggy peaks in the line graphs depicted below. Each vertical bars that cuts the flat line at the top represents a protein/gene from our list that belongs to the gene set of interest. 
 
-![Potential outcomes from GSEA](../F2.large.jpg)
+![Potential outcomes from GSEA](../F2.large.jpg) 
 
 GSEA then provides an enrichment score which reflects the extent to which our dataset is represented at the start (top) or end (bottom) of the list L. If we see majority of our genes are  
 1. at the top of a list, then the score is high and we can say that our list is significantly enriched for that term (S1 above)  
@@ -46,15 +46,23 @@ library(gridExtra)
 #-------------------------------------------------------------
 # Function  : plot_foi_trends
 # Aim       : Function to plot Features of Interest (foi)
+# Input
+#     de    : object as a result of differential expression analysis
+#     obj   : a list of go terms with proteins that map to them
+#     foi   : feature of interest (usually a GO term definition : 'regulation of translation')
+#     ranks : genes from our dataset ranked by order of logFC/p-val,log-odds etc.
 #--------------------------------------------------------------
-plot_foi_trends <- function(obj, foi){
-  foi_proteins <- all_go[[foi]]
+plot_foi_trends <- function(de, obj, foi, ranks){
+  print(foi)
+  foi_proteins <- obj[[foi]]
+  #print(foi_proteins)
   
   # Subset stats for the list of proteins
-  sub <- obj %>%
+  sub <- de %>%
     mutate(sig=ifelse(adj.P.Val<0.1, "sig.", "not sig.")) %>% # add "sig" column
     mutate(foi=Master.Protein.Accessions %in% foi_proteins) %>%
     arrange(foi)
+  
   sub$gene.name = gsub(" ","",sapply(strsplit(sub$Master.Protein.Descriptions,"GN=|PE"),"[[",2))
   
   # ggplot object  
@@ -70,15 +78,70 @@ plot_foi_trends <- function(obj, foi){
   p = p+geom_text_repel(data=sub %>% filter(Master.Protein.Accessions %in% foi_proteins & sig=="sig."), aes(label=gene.name), size=3,colour="black")
   
   # Create GSEA line graph
-  q = plotEnrichment(all_go[[foi]], ranks) + ggtitle(foi)
+  q = plotEnrichment(obj[[foi]], ranks) + ggtitle(foi)
   
   # Plot both graphs
   grid.arrange(p,q,nrow=1,ncol=2)
+}
+
+#-------------------------------------------------------------
+# Function  : plotRanksEnrich
+# Aim       : Function to plot ranking of our genes and gene set enrichment
+# Input
+#     obj   : a list of go terms with proteins that map to them
+#     ranks : genes from our dataset ranked by order of logFC/p-val,log-odds etc.
+#     pre   : prefix for output file
+#--------------------------------------------------------------
+plotRanksEnrich<-function(obj,ranks,pre){
+  # Plot log fold changes
+  # Can see genes at both ends of spectrum - up and downregulated after arsenite treatment. 
+  # We have the up-regulated ones at the top. 
   
-  invisible(p)
+  pdf(paste("../plots/",paste(pre,"Ranked-enrichment-data.pdf",sep="_"),sep=""),paper="a4r",width=14,height=8)
+  par(mfrow=c(1,2))
+  barplot(ranks.100,las=2,cex.names=0.1)
+  plot(ranks.100)
+  par(mfrow=c(1,1))
+  
+  # Run a pre-ranked GSEA against all known GO terms
+  fgseaRes <- fgsea(obj, ranks.100, minSize=15, maxSize = 500, nperm=1000)
+  head(fgseaRes[order(pval, -abs(NES)), ], n=10)
+  
+  # Select the top-10 go terms and plot enrichment for them
+  head(fgseaRes[order(pval, -abs(NES)), ], n=10)$pathway %>% lapply(function(x){
+    plotEnrichment(obj[[x]], ranks) + ggtitle(x)
+  })
+  dev.off()
+  return(fgseaRes)
+}
+
+#-------------------------------------------------------------
+# Function  : gseaTab
+# Aim       : Function to plot ranking of our genes and gene set enrichment
+# Input
+#     obj   : a list of go terms with proteins that map to them
+#     fgseaRes : data table obtained from running 'fgsea' on your data
+#     pre   : prefix for output file
+#--------------------------------------------------------------
+gseaTab<-function(obj, fgseaRes,ranks,pre){
+  topUp <- fgseaRes %>% 
+      filter(ES > 0) %>% 
+      top_n(10, wt=-pval)
+  
+  topDown <- fgseaRes %>% 
+      filter(ES < 0) %>% 
+      top_n(10, wt=-pval)
+  
+  topPathways <- bind_rows(topUp, topDown) %>% 
+      arrange(-ES)
+  
+  pdf(paste("../plots/",paste(pre,"GSEA-results-table-top-bottom-10.pdf",sep="_"),sep=""),paper="a4r",width=14,height=8)
+  x <- plotGseaTable(all_go[topPathways$pathway], gseaParam = 0.5, ranks, fgseaRes)
+  dev.off()
 }
 ```
-
+## 2. Reading in data
+The first step is to read in data from the previous step of analysis. In our case, we have the results of a differential analysis between Ctrl and 100uM and Ctrl and 400uM Arsenite treated cells. We have approximately 200 proteins that are DE in each comparison. We also open up the full mapping of human proteins to go terms which is saved in the RDS "../shared_files/h_sapiens_go_full.rds".  
 ```{r 01_Reading-in-data}
 
 Ctrl.100uM <- readRDS("../results/Ctrl.100uM.rds")
@@ -89,6 +152,12 @@ Ctrl.400uM <- readRDS("../results/Ctrl.400uM.rds")
 
 human_go <- readRDS("../shared_files/h_sapiens_go_full.rds")
 ```
+## 3. Gene sets of interest
+
+### 3a. Home-made gene sets   
+In the first pass of GSEA analysis, we set up some manual gene sets which we'd like to assess ur data against. These include translation initiation, elongation, tRNA aminoacyltransferases etc...
+
+Additionally, we take the list of proteins in our study and map every one of them to their entire GO term repertoire. Having done that, we then reverse the mapping to be centred around each GO terms i.e for each GO term, we get a list of all proteins that are annotated with it. Since this bit of code is time consuming, we save it as an RDS and call on it later as the analysis progresses. 
 
 ```{r 02_Setting-up-gene-sets, echo = T, eval = F}
 
@@ -123,80 +192,80 @@ print(head(all_go,1))
 saveRDS(all_go,"../results/all_go.rds")
 
 # Plot enrichment for our own defined genesets
-#lapply(gotoi, function(x) plotEnrichment(x, ranks))
+lapply(gotoi, function(x) plotEnrichment(x, ranks))
 ```
+### 3b. Gene sets based on GO terms
 
+Using 'all_go' which contains and extensive protein map onto GO terms, we perform a GSEA and display the green line graphs for the top 10 hits. We start by ranking out set of proteins based on logFC in either the 100uM or 40-uM arsenite comparison. Plots can be found under "../plots/*Ranked-enrichment-data.pdf"
 
-```{r 03_Gene-set-enrichment-analysis}
+```{r 03_Gene-set-enrichment-analysis, eval=T, echo=T, warning=F}
 
 all_go = readRDS("../results/all_go.rds")
 
 # Ranking the 100uM dataset using logFC
-ranks <- rev(sort(Ctrl.100uM$logFC))
-names(ranks) <- rownames(Ctrl.100uM)
-head(ranks)
+ranks.100 <- rev(sort(Ctrl.100uM$logFC))
+names(ranks.100) <- rownames(Ctrl.100uM)
+head(ranks.100)
 
-# Plot log fold changes
-# Can see genes at both ends of spectrum - up and downregulated after arsenite treatment. 
-# We have the up-regulated ones at the top. 
-par(mfrow=c(1,2))
-barplot(ranks,las=2,cex.names=0.1)
-plot(ranks)
-par(mfrow=c(1,1))
+# Ranking the 100uM dataset using logFC
+ranks.400 <- rev(sort(Ctrl.400uM$logFC))
+names(ranks.400) <- rownames(Ctrl.400uM)
+head(ranks.400)
 
-# Run a pre-ranked GSEA against all known GO terms
-fgseaRes <- fgsea(all_go, ranks, minSize=15, maxSize = 500, nperm=1000)
-head(fgseaRes[order(pval, -abs(NES)), ], n=10)
-
-# Select the top-10 go terms and plot enrichment for them
-head(fgseaRes[order(pval, -abs(NES)), ], n=10)$pathway %>% lapply(function(x){
-  plotEnrichment(all_go[[x]], ranks) + ggtitle(x)
-})
-
+# Plots ranked data as well as enrichment
+fgseaRes.100 = plotRanksEnrich(all_go,ranks.100,"Ctrl-vs-100uM-Arsenite")
+fgseaRes.400 = plotRanksEnrich(all_go,ranks.400,"Ctrl-vs-400uM-Arsenite")
 
 ```
 ## 4. Assessing hits
 Here we are trying to look at the ranking+enrichment for our terms of interest. We start by looking at which terms are represented in our data
 
-```{r 04_Assessing-hits}
-fgseaRes %>% arrange(pval) %>% filter(grepl("Ribosome", pathway, ignore.case=TRUE))
-fgseaRes %>% arrange(pval) %>% filter(grepl("Endoplasmic", pathway, ignore.case=TRUE))
-fgseaRes %>% arrange(pval) %>% filter(grepl("Translation", pathway, ignore.case=TRUE))
-```
-##£ 4b. Plotting enrichment plots of interest
-We draw a volcano plot and en enrichment plot showing the terms enriched and the genes that contribute to the enrichment
+### 4a. Specific pathways
+We are looking at specific pathways related to the ribosome, endoplasmic reticulum and translation to see if there are any pathways enriched for in our gene set. There are some that are significant before correcting for multiple hypothesis testing such as  endoplasmic reticulum unfolded protein response (p = 0.01152738),  regulation of translation (p = 0.006944444) and tRNA aminoacylation for protein translation (p = 0.029619182). 
 
-```{r 4b. Enrichment-plots-of-interest}
+```{r 04_Assessing-hits, echo =T, eval=F}
+fgseaRes.100 %>% arrange(pval) %>% filter(grepl("Ribosome", pathway, ignore.case=TRUE))
+fgseaRes.100  %>% arrange(pval) %>% filter(grepl("Endoplasmic", pathway, ignore.case=TRUE))
+fgseaRes.100 %>% arrange(pval) %>% filter(grepl("Translation", pathway, ignore.case=TRUE))
+
+fgseaRes.400 %>% arrange(pval) %>% filter(grepl("Ribosome", pathway, ignore.case=TRUE))
+fgseaRes.400  %>% arrange(pval) %>% filter(grepl("Endoplasmic", pathway, ignore.case=TRUE))
+fgseaRes.400 %>% arrange(pval) %>% filter(grepl("Translation", pathway, ignore.case=TRUE))
+```
+### 4b. Plotting enrichment plots for specific pathways
+We draw a volcano plot and an enrichment plot showing the terms enriched and the genes that contribute to the enrichment based on the pathways of interest from above.  
+
+In the volcano plots, turquoise represents non-significant proteins and purple represents significant ones after arsenite treatment compared to controls. Asterisk shapes indicate which of these proteins are in the category of interest eg : 'structural constituent of ribosome'. Black labels indicate those proteins that are significantly differentially expressed upon arsenite treatment AND in our pathway of interest. 
+
+In the GSEA plot, along the x-axis, we plot our ranked list of proteins in descending order of log fold-change in expression vs Ctrl. There are 896 such proteins. Then we mark with vertical bars all the locations of proteins that  belong to our geneset of interest. Finally, we follow the GSEA method to draw the green line where the enrichment score is a running sum and goes up or down depending on whether a protein is in the gene set of interest or not. Genesets with early or late peaks are most relevant. This varies in the 100uM vs 400uM treated cells and plots can be found under "../plots/*features-of-interest-volcano-random-walks.pdf"
+
+```{r 4b. Enrichment-plots-for-features-of-interest}
 
 # 100uM
-plot_foi_trends(Ctrl.100uM, 'regulation of translation')
-plot_foi_trends(Ctrl.100uM, 'tRNA aminoacylation for protein translation')
-plot_foi_trends(Ctrl.100uM, 'structural constituent of ribosome')
-plot_foi_trends(Ctrl.100uM, 'endoplasmic reticulum unfolded protein response')
+pdf("../plots/Ctrl-vs-100uM-Arsenite_GSEA-features-of-interest-volcano-random-walks.pdf",paper="a4r",width=14,height=8)
+plot_foi_trends(Ctrl.100uM, all_go,'regulation of translation',ranks.100)
+plot_foi_trends(Ctrl.100uM, all_go,'tRNA aminoacylation for protein translation',ranks.100)
+plot_foi_trends(Ctrl.100uM,all_go,'structural constituent of ribosome', ranks.100)
+plot_foi_trends(Ctrl.100uM,all_go,'endoplasmic reticulum unfolded protein response', ranks.100)
+dev.off()
 
 #400uM
-plot_foi_trends(Ctrl.400uM, 'regulation of translation')
-plot_foi_trends(Ctrl.400uM, 'tRNA aminoacylation for protein translation')
-plot_foi_trends(Ctrl.400uM, 'structural constituent of ribosome')
-plot_foi_trends(Ctrl.400uM, 'endoplasmic reticulum unfolded protein response')
+pdf("../plots/Ctrl-vs-400uM-Arsenite_GSEA-features-of-interest-volcano-random-walks.pdf",paper="a4r",width=14,height=8)
+plot_foi_trends(Ctrl.400uM, all_go,'regulation of translation',ranks.400)
+plot_foi_trends(Ctrl.400uM, all_go,'tRNA aminoacylation for protein translation',ranks.400)
+plot_foi_trends(Ctrl.400uM,all_go,'structural constituent of ribosome', ranks.400)
+plot_foi_trends(Ctrl.400uM, all_go,'endoplasmic reticulum unfolded protein response',ranks.400)
+dev.off()
+
+# Example plot
+plot_foi_trends(Ctrl.400uM, all_go,'endoplasmic reticulum unfolded protein response',ranks.400)
 
 ```
-
+### 4c. Overall enriched/depleted genesets
+To get a feel for the overall 
 
 ```{r 4c. Ranking-top-enriched-depleted-genesets}
 
-topUp <- fgseaRes %>% 
-    filter(ES > 0) %>% 
-    top_n(10, wt=-pval)
-
-topDown <- fgseaRes %>% 
-    filter(ES < 0) %>% 
-    top_n(10, wt=-pval)
-
-topPathways <- bind_rows(topUp, topDown) %>% 
-    arrange(-ES)
-
-
-x <- plotGseaTable(all_go[topPathways$pathway], gseaParam = 0.5, ranks, fgseaRes)
-#str(x)
+gseaTab(all_go, fgseaRes.100,ranks.100,"Ctrl-vs-100uM-Arsenite")
+gseaTab(all_go, fgseaRes.400,ranks.400,"Ctrl-vs-400uM-Arsenite")
 ```
