@@ -3,12 +3,11 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
-
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+We have observed some evidence of ratio compression for PSMs with high interference and/or low SN. Now, let's see how these thresholds impact the fold-differences between samples/conditions. For this, we will use the parse
 
 ```{r}
 source('../../CamProt_R/Utility.R')
+source('../../CamProt_R/PTM.R') #parsePSMAndAggregate is in here. Really should be moved to Utility!
 library(tidyverse)
 library(Hmisc)
 ```
@@ -18,11 +17,158 @@ samples_inf <- '../raw/samples.tsv'
 ```
  
 ```{r}
-total_psm <- read.delim("../raw/Total_Arsenide_TMT_PSMs.txt", stringsAsFactors=FALSE)
+total_psm_raw <- "../raw/Total_Arsenide_TMT_PSMs.txt"
+total_psm <- parse_features(total_psm_raw, TMT=TRUE, filter_crap=TRUE, filter_associated_crap=TRUE, level='PSM')
+total_psm_res <- total_psm %>% filter(is.finite(Isolation.Interference.in.Percent)) %>%
+    makeMSNSet(samples_inf, level="PSM", ab_col_ix=2) 
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+Function to fitler PSM and aggregate to protein
+```{r}
+PSMToProtein <- function(
+  raw_res, # the PSM level dataframe
+  master_protein_col="Master.Protein.Accessions", # master protein column name
+  SN_threshold=5, # Signal:noise threshold to retain PSM quantification values
+  intensity_filter=0, # Minimum intensity value, e.g 2^2.25
+  interference_threshold=50, # Maximum interference
+  mod_col="Modifications" # column to identify the modifications for grouping PSM into pep seq + mod
+){
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+  ####################################################
+  # Remove PSMs with Interference above threshold
+  ####################################################
+  raw_res_int <- raw_res[fData(raw_res)$Isolation.Interference.in.Percent<=interference_threshold,]
+  
+  ####################################################
+  # Remove PSMs with Signal:Noise (SN) below threshold
+  ####################################################
+  raw_res_sn <- raw_res_int[fData(raw_res_int)$Average.Reporter.SN>=SN_threshold,]
+  
+  ###################################################
+  # Remove low intensity estimates
+  ###################################################
+  exprs(raw_res_sn)[exprs(raw_res_sn)<intensity_filter] <- NA
+  
+  ######################################################
+  # Aggregate to unique peptide sequences
+  ######################################################
+  agg_pep <- suppressWarnings(suppressMessages(agg_to_peptides(raw_res_sn)))
+  
+  ######################################
+  # Aggregate to unique protein
+  ######################################
+  agg_prot <- suppressWarnings(suppressMessages(agg_to_protein(agg_pep, master_protein_col))) %>%
+    centerNormalise()
+  
+  invisible(agg_prot)
+}
+  
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+x <- PSMToProtein(total_psm_res, SN_threshold=5)
+```
+
+```{r}
+dim(x)
+```
+Function to obtain the fold changes for each comparison
+```{r}
+getFoldChanges <- function(obj, group1, group2){
+
+  fc <- obj %>% exprs() %>%
+  apply(MARGIN=1, FUN=function(x){
+    g1=mean(x[group1], na.rm=TRUE)
+    g2=mean(x[group2], na.rm=TRUE)
+    
+    if(any(is.na(c(g1, g2)))){
+      return(NA)
+      } 
+    else{
+      return(g2/g1)
+      }
+  
+  })
+  
+  invisible(log2(fc))
+}
+
+
+getAllFoldChanges <- function(obj){
+  
+  g1g2 <- getFoldChanges(obj, 1:3, 4:7) %>% data.frame() %>%
+    tibble::rownames_to_column('protein') %>%
+    mutate(comp='Ctrl:Arsenite100')
+  
+  g1g3 <- getFoldChanges(obj, 1:3, 8:10) %>% data.frame() %>%
+    tibble::rownames_to_column('protein') %>%
+    mutate(comp='Ctrl:Arsenite400')
+  
+  g2g3 <- getFoldChanges(obj, 4:7, 8:10) %>% data.frame() %>%
+    tibble::rownames_to_column('protein') %>%
+    mutate(comp='Arsenite100:Arsenite400')
+  
+  results <- do.call('rbind', list(g1g2, g1g3, g2g3))
+  colnames(results)[2] <- 'fc'
+  
+  return(results)
+}
+
+getAllFoldChanges(x) %>% ggplot(aes(fc, colour=comp)) + geom_density() + my_theme
+```
+
+```{r}
+fc_dfs <- NULL
+for(sn in c(0,5,10,100)){
+  for(int in c(0,5,10,50,100)){
+    x <- PSMToProtein(total_psm_res, SN_threshold=sn, interference_threshold=int, intensity_filter=0)
+    fc <- getAllFoldChanges(x)
+    fc$sn <- sn
+    fc$int <- int
+    fc_dfs[[sprintf('%s_%s', sn, int)]] <- fc
+  }
+    
+}
+```
+
+```{r}
+
+do.call('rbind', fc_dfs) %>%
+  ggplot(aes(fc, colour=factor(int))) + geom_density() + my_theme +
+  facet_grid(comp~sn, scales='free_y')
+
+do.call('rbind', fc_dfs) %>%
+  ggplot(aes(fc, colour=factor(sn))) + geom_density() + my_theme +
+  facet_grid(comp~int, scales='free_y')
+```
+
+```{r}
+human_go <- readRDS('../shared_files/h_sapiens_go_full.rds')
+
+translation_init_activity <- human_go %>% filter(GO.ID=='GO:0003743') %>% pull(UNIPROTKB)
+translation_elong_activity <- human_go %>% filter(GO.ID=='GO:0003746') %>% pull(UNIPROTKB)
+translation_term_activity <- human_go %>% filter(GO.ID=='GO:0008079') %>% pull(UNIPROTKB)
+tRNA_AA <- human_go %>% filter(GO.ID=='GO:0004812') %>% pull(UNIPROTKB)
+translocon <- human_go %>% filter(GO.ID=='GO:0006616') %>% pull(UNIPROTKB)
+
+ribosome_structural_component <- human_go %>% filter(GO.ID=='GO:0003735') %>% pull(UNIPROTKB)
+cytosol <- human_go %>% filter(GO.ID=='GO:0005829') %>% pull(UNIPROTKB)
+ribosome_structural_component_cytosol <- intersect(ribosome_structural_component, cytosol)
+print(length(ribosome_structural_component))
+print(length(cytosol))
+print(length(ribosome_structural_component_cytosol))
+```
+
+```{r, fig.width=10, fig.height=10}
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% ribosome_structural_component_cytosol) %>%
+  ggplot(aes(fc, colour=factor(sn))) + geom_density() + my_theme +
+  facet_grid(comp~int, scales='free_y')
+
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% ribosome_structural_component_cytosol) %>%
+  ggplot(aes(fc, colour=factor(int))) + geom_density() + my_theme +
+  facet_grid(comp~sn, scales='free_y')
+```
+
+

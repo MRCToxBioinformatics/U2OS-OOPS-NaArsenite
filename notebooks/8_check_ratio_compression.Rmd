@@ -5,11 +5,342 @@ output: html_notebook
 
 We have a concern that our fold changes are being 'compressed'. If so, this will be due to co-isolation. We can check this at the PSM level. Let's start by reading in the PSM level data.
 ```{r}
-total_psm <- read_delim("../raTotal_Arsenide_TMT_PSMs.txt")
+source('../../CamProt_R/Utility.R')
+library(tidyverse)
+library(Hmisc)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r}
+samples_inf <- '../raw/samples.tsv'
+```
+ 
+```{r}
+total_psm <- read.delim("../raw/Total_Arsenide_TMT_PSMs.txt", stringsAsFactors=FALSE)
+rbp_psm <- read.delim("../raw/RBP_Arsenide_TMT_PSMs.txt", stringsAsFactors=FALSE)
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```
+
+```{r}
+total_psm_msnset <- makeMSNSet(total_psm, samples_inf, level='PSM', ab_col_ix=2) 
+rbp_psm_msnset <- makeMSNSet(rbp_psm, samples_inf, level='PSM', ab_col_ix=2) 
+
+colSums(exprs(total_psm_msnset), na.rm=TRUE)
+colSums(exprs(rbp_psm_msnset), na.rm=TRUE)
+
+plotLabelQuant(total_psm_msnset, log=TRUE)
+plotLabelQuant(rbp_psm_msnset, log=TRUE)
+
+
+```
+```{r}
+total_psm_msnset <- total_psm_msnset %>% centerNormalise()
+plotLabelQuant(total_psm_msnset, log=TRUE)
+```
+
+```{r}
+fData(total_psm_msnset)$Ctrl_vs_Ctrl <- total_psm_msnset %>% exprs() %>%
+  apply(MARGIN=1, FUN=function(x){
+  ctrl=mean(x[4], na.rm=TRUE)
+  ars_100=mean(x[6], na.rm=TRUE)
+  
+  if(any(is.na(c(ctrl, ars_100)))){
+    return(NA)
+    } 
+  else{
+    return(ars_100/ctrl)
+    }
+  
+  return()
+})
+
+fData(total_psm_msnset)$Ctrl_vs_100 <- total_psm_msnset %>% exprs() %>%
+  apply(MARGIN=1, FUN=function(x){
+  ctrl=mean(x[1:3], na.rm=TRUE)
+  ars_100=mean(x[4:7], na.rm=TRUE)
+  
+  if(any(is.na(c(ctrl, ars_100)))){
+    return(NA)
+    } 
+  else{
+    return(ars_100/ctrl)
+    }
+  
+  return()
+})
+
+fData(total_psm_msnset)$Ctrl_vs_400 <- total_psm_msnset %>% exprs() %>%
+  apply(MARGIN=1, FUN=function(x){
+  ctrl=mean(x[1:3], na.rm=TRUE)
+  ars_400=mean(x[8:10], na.rm=TRUE)
+  
+  if(any(is.na(c(ctrl, ars_400)))){
+    return(NA)
+    } 
+  else{
+    return(ars_400/ctrl)
+    }
+  
+  return()
+})
+
+fData(total_psm_msnset)$As100_vs_400 <- total_psm_msnset %>% exprs() %>%
+  apply(MARGIN=1, FUN=function(x){
+  ars_100=mean(x[4:7], na.rm=TRUE)
+  ars_400=mean(x[8:10], na.rm=TRUE)
+  
+  if(any(is.na(c(ars_100, ars_400)))){
+    return(NA)
+    } 
+  else{
+    return(ars_400/ars_100)
+    }
+  
+  return()
+})
+
+```
+
+
+```{r}
+
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(log2(Ctrl_vs_100))) +
+  geom_density() +
+  my_theme
+
+cor(fData(total_psm_msnset)$Isolation.Interference.in.Percent, 
+    fData(total_psm_msnset)$Ctrl_vs_Ctrl, use='complete.obs')
+
+cor(fData(total_psm_msnset)$Isolation.Interference.in.Percent, 
+    fData(total_psm_msnset)$Ctrl_vs_100, use='complete.obs')
+
+cor(fData(total_psm_msnset)$Isolation.Interference.in.Percent, 
+    fData(total_psm_msnset)$Ctrl_vs_400, use='complete.obs')
+
+cor(fData(total_psm_msnset)$Isolation.Interference.in.Percent, 
+    fData(total_psm_msnset)$As100_vs_400, use='complete.obs')
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, log2(Ctrl_vs_Ctrl))) +
+  geom_point(size=0.1, alpha=0.1) +
+  geom_smooth(method='lm') +
+  my_theme
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, log2(Ctrl_vs_100))) +
+  geom_point(size=0.1, alpha=0.1) +
+  geom_smooth(method='lm') +
+  my_theme
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, log2(Ctrl_vs_400))) +
+  geom_point(size=0.1, alpha=0.1) +
+  geom_smooth(method='lm') +
+  my_theme
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, log2(As100_vs_400))) +
+  geom_point(size=0.1, alpha=0.1) +
+  geom_smooth(method='lm') +
+  my_theme
+```
+
+
+```{r}
+cor(fData(total_psm_msnset)$Average.Reporter.SN, 
+    fData(total_psm_msnset)$Ctrl_vs_100, use='complete.obs')
+
+cor(fData(total_psm_msnset)$Average.Reporter.SN, 
+    fData(total_psm_msnset)$Ctrl_vs_400, use='complete.obs')
+
+cor(fData(total_psm_msnset)$Average.Reporter.SN, 
+    fData(total_psm_msnset)$As100_vs_400, use='complete.obs')
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(log2(Average.Reporter.SN), log2(Ctrl_vs_100))) +
+  geom_point(size=0.1, alpha=0.1) +
+  my_theme
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(log2(Average.Reporter.SN), log2(Ctrl_vs_400))) +
+  geom_point(size=0.1, alpha=0.1) +
+  my_theme
+
+fData(total_psm_msnset) %>%
+  ggplot(aes(log2(Average.Reporter.SN), log2(As100_vs_400))) +
+  geom_point(size=0.1, alpha=0.1) +
+  my_theme
+
+```
+```{r}
+fData(total_psm_msnset) %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_interference=cut2(Isolation.Interference.in.Percent, g=10, levels.mean=TRUE)) %>%
+  ggplot(aes(binned_interference, log2(Ctrl_vs_100))) +
+  geom_violin(size=0.1) +
+  geom_boxplot(size=0.1) +
+  my_theme +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab('Interference') +
+  ylab('Ctrl vs As100uM (log2)')
+
+
+fData(total_psm_msnset) %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_interference=cut2(Isolation.Interference.in.Percent, g=10, levels.mean=TRUE)) %>%
+  ggplot(aes(binned_interference, log2(Ctrl_vs_400))) +
+  geom_violin(size=0.1) +
+  geom_boxplot(size=0.1) +
+  my_theme +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab('Interference') +
+  ylab('Ctrl vs As100uM (log2)')
+```
+```{r}
+human_go <- readRDS('../shared_files/h_sapiens_go_full.rds')
+
+translation_init_activity <- human_go %>% filter(GO.ID=='GO:0003743') %>% pull(UNIPROTKB)
+translation_elong_activity <- human_go %>% filter(GO.ID=='GO:0003746') %>% pull(UNIPROTKB)
+translation_term_activity <- human_go %>% filter(GO.ID=='GO:0008079') %>% pull(UNIPROTKB)
+tRNA_AA <- human_go %>% filter(GO.ID=='GO:0004812') %>% pull(UNIPROTKB)
+translocon <- human_go %>% filter(GO.ID=='GO:0006616') %>% pull(UNIPROTKB)
+
+ribosome_structural_component <- human_go %>% filter(GO.ID=='GO:0003735') %>% pull(UNIPROTKB)
+cytosol <- human_go %>% filter(GO.ID=='GO:0005829') %>% pull(UNIPROTKB)
+ribosome_structural_component_cytosol <- intersect(ribosome_structural_component, cytosol)
+print(length(ribosome_structural_component))
+print(length(cytosol))
+print(length(ribosome_structural_component_cytosol))
+```
+
+```{r}
+fData(total_psm_msnset) %>%
+  mutate(foi=Master.Protein.Accessions %in% ribosome_structural_component_cytosol) %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_interference=cut2(Isolation.Interference.in.Percent, g=10, levels.mean=TRUE)) %>%
+  ggplot(aes(binned_interference, log2(Ctrl_vs_400), col=foi)) +
+  geom_violin(size=0.5) +
+  geom_boxplot(size=0.5) +
+  geom_hline(yintercept=0, linetype=3) +
+  my_theme +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab('Interference') +
+  ylab('Ctrl vs As100uM (log2)') +
+  scale_colour_manual(values=cbPalette, name='cyt ribosome')
+
+
+fData(total_psm_msnset) %>%
+  mutate(foi=Master.Protein.Accessions %in% ribosome_structural_component_cytosol) %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_sn=cut2(Average.Reporter.SN, g=10, levels.mean=TRUE)) %>%
+  ggplot(aes(binned_sn, log2(Ctrl_vs_400), col=foi)) +
+  geom_violin(size=0.5) +
+  geom_boxplot(size=0.5) +
+  geom_hline(yintercept=0, linetype=3) +
+  my_theme +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab('SN') +
+  ylab('Ctrl vs As100uM (log2)') +
+  scale_colour_manual(values=cbPalette, name='cyt ribosome')
+
+```
+```{r}
+fData(total_psm_msnset) %>%
+  mutate(foi=Master.Protein.Accessions %in% ribosome_structural_component_cytosol) %>%
+  arrange(foi) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, log2(Ctrl_vs_400), col=foi)) +
+  geom_point(size=0.1, alpha=0.1) +
+  geom_smooth(method='lm') +
+  my_theme +
+  scale_colour_manual(values=cbPalette, name='cyt ribosome')
+
+fData(total_psm_msnset) %>%
+  mutate(foi=Master.Protein.Accessions %in% ribosome_structural_component_cytosol) %>%
+  arrange(foi) %>%
+  ggplot(aes(log2(Average.Reporter.SN), log2(Ctrl_vs_400), col=foi)) +
+  geom_point(size=0.1, alpha=0.1) +
+  my_theme +
+  scale_colour_manual(values=cbPalette, name='cyt ribosome') +
+  facet_wrap(~foi)
+```
+
+
+```{r}
+fData(total_psm_msnset) %>%
+  filter(Master.Protein.Accessions %in% ribosome_structural_component_cytosol) %>%
+  group_by(Master.Protein.Accessions) %>%
+  tally() %>%
+  arrange(desc(n))
+?arrange
+```
+```{r}
+total_fc <- readRDS("../results/Ctrl.400uM.Total.rds")
+```
+
+```{r, fig.height=10, fig.width=10}
+fData(total_psm_msnset) %>%
+  mutate(foi=Master.Protein.Accessions=='P36578') %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_interference=cut2(Isolation.Interference.in.Percent, g=5)) %>%
+  mutate(binned_SN=cut2(Average.Reporter.SN, cuts=c(0,10,50,100,200)))
+
+
+plotFOIIntSNFC <- function(foi, foi_name, n_bins=10){
+  
+.data <- fData(total_psm_msnset) %>%
+  filter(Number.of.Proteins==1) %>%
+  mutate(foi=ifelse(Master.Protein.Accessions %in% foi, foi_name, 'Other')) %>%
+  filter(is.finite(Isolation.Interference.in.Percent)) %>%
+  mutate(binned_interference=cut2(Isolation.Interference.in.Percent, g=n_bins)) %>%
+  mutate(binned_SN=cut2(Average.Reporter.SN, g=n_bins))
+
+print(.data %>% group_by(foi) %>%
+  summarise(Ctrl_vs_400=mean(log2(Ctrl_vs_400), na.rm=TRUE)))
+
+print(total_fc %>% mutate(foi=ifelse(Master.Protein.Accessions %in% foi, foi_name, 'Other')) %>%
+  group_by(foi) %>%
+  summarise(logFC=mean(logFC, na.rm=TRUE)))
+
+.data_summarised <- .data %>%
+  group_by(binned_interference, binned_SN, foi) %>%
+  summarise(Ctrl_vs_400=mean(log2(Ctrl_vs_400), na.rm=TRUE))
+
+
+
+p <- .data_summarised %>%
+  ggplot(aes(binned_interference, binned_SN, fill=Ctrl_vs_400)) +
+  #geom_violin(size=0.5) +
+  geom_tile(size=0.5) +
+  geom_hline(yintercept=0, linetype=3) +
+  my_theme +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab('Interference') +
+  ylab('SN') +
+  scale_fill_gradient2(mid='white', name='Ctrl vs As100uM (log2)') +
+  facet_wrap(~foi)
+  
+  print(p)
+}
+
+fvarLabels(total_psm_msnset)
+
+plotFOIIntSNFC('P36578', '60S ribosomal protein L4', n_bins=4)
+plotFOIIntSNFC('P61247', 'P61247', n_bins=4)
+
+plotFOIIntSNFC(ribosome_structural_component_cytosol, 'Cytosolic Ribosome', n_bins=10)
+
+```
+```{r}
+peptide_level_quant <- read.delim('../raw/total_arsenite_peptidegroups.txt')
+peptide_level_quant %>% filter(Master.Protein.Accessions=='P36578') %>%
+  arrange(desc(Number.of.PSMs))
+
+total_psm_msnset[fData(total_psm_msnset)$Sequence=='IEEVPELPLVVEDK',] %>% exprs()
+
+fvarLabels(total_psm_msnset)
+total_psm_msnset[fData(total_psm_msnset)$Sequence=='IEEVPELPLVVEDK',] %>% fData() %>%
+  select(Average.Reporter.SN, Isolation.Interference.in.Percent, Ctrl_vs_100, Ctrl_vs_400, As100_vs_400)
+```
+
