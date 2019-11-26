@@ -1,0 +1,137 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Initially, we'd taken the peptide level output from PD. However, in the previous notebook, we demonstrated that these quantifications lead to ratio compression due to interference/co-isolation. Therefore, we'd like to start from the PSM-level quantification and manually filter on PSM SN and Interference
+
+
+```{r}
+source('../../CamProt_R/Utility.R')
+library(tidyverse)
+library(Hmisc)
+```
+
+
+```{r}
+samples_inf <- '../raw/samples.tsv'
+```
+ 
+Read in the PSM level data
+```{r}
+total_psm_raw <- "../raw/Total_Arsenide_TMT_PSMs.txt"
+
+
+total_psm <- parse_features(total_psm_raw, TMT=TRUE, filter_crap=TRUE, filter_associated_crap=TRUE, level='PSM')
+total_psm_res <- total_psm %>% filter(is.finite(Isolation.Interference.in.Percent)) %>%
+    makeMSNSet(samples_inf, level="PSM", ab_col_ix=2) 
+```
+
+```{r}
+rbp_psm_raw <- "../raw/RBP_Arsenide_TMT_PSMs.txt"
+
+rbp_psm <- parse_features(rbp_psm_raw, TMT=TRUE, filter_crap=TRUE, filter_associated_crap=TRUE, level='PSM')
+rbp_psm_res <- rbp_psm %>% filter(is.finite(Isolation.Interference.in.Percent)) %>%
+    makeMSNSet(samples_inf, level="PSM", ab_col_ix=2) 
+```
+
+Function to fitler PSM and aggregate to protein
+```{r}
+PSMToProtein <- function(
+  raw_res, # the PSM level dataframe
+
+  SN_threshold=5, # Signal:noise threshold to retain PSM quantification values
+  intensity_filter=0, # Minimum intensity value, e.g 2^2.25
+  interference_threshold=50, # Maximum interference
+  mod_col="Modifications" # column to identify the modifications for grouping PSM into pep seq + mod
+){
+
+  # Remove PSMs with Interference above threshold
+  raw_res_int <- raw_res[fData(raw_res)$Isolation.Interference.in.Percent<=interference_threshold,]
+  
+  # Remove PSMs with Signal:Noise (SN) below threshold
+  raw_res_sn <- raw_res_int[fData(raw_res_int)$Average.Reporter.SN>=SN_threshold,]
+  
+  # Remove low intensity estimates
+  exprs(raw_res_sn)[exprs(raw_res_sn)<intensity_filter] <- NA
+  
+  # Aggregate to unique peptide sequences
+  agg_pep <- suppressWarnings(suppressMessages(agg_to_peptides(raw_res_sn)))
+  invisible(agg_pep)}
+
+
+
+  
+```
+
+```{r}
+int_thresholds <- c(0, 10, 50)
+pep_quants <- vector("list", length=length(int_thresholds))
+names(pep_quants) <- sprintf('Int_%s', int_thresholds)
+
+for(int in int_thresholds){
+  threshold_quants <-vector("list", 2)
+  names(threshold_quants) <- c('total', 'rbp')
+  
+  threshold_quants[['total']] <- PSMToProtein(
+    total_psm_res, SN_threshold=10, interference_threshold=int)
+  threshold_quants[['rbp']] <- PSMToProtein(
+    rbp_psm_res, SN_threshold=10, interference_threshold=int)
+    
+  pep_quants[[sprintf('Int_%s', int)]] <- threshold_quants
+}
+```
+
+```{r}
+pep_quants$Int_0$total %>% plotMissing()
+```
+
+```{r}
+plotMissing(total_psm_res)
+plotMissing(rbp_psm_res)
+```
+
+```{r}
+pep_quants %>% lapply(function(x){
+  plotMissing(x$total)
+  plotMissing(x$rbp)
+})
+```
+
+
+
+```{r}
+prot_quants <- pep_quants %>% lapply(function(x){
+  
+  # Aggregate to unique protein
+
+  threshold_quants <-vector("list", 2)
+  names(threshold_quants) <- c('total', 'rbp')
+  
+  threshold_quants$total <- suppressWarnings(suppressMessages(
+    agg_to_protein(x$total, protein_col="Master.Protein.Accessions",))) %>%
+    centerNormalise()
+
+  threshold_quants$rbp <- suppressWarnings(suppressMessages(
+    agg_to_protein(x$rbp, protein_col="Master.Protein.Accessions",))) %>%
+    centerNormalise()
+  
+  return(threshold_quants)
+  
+})
+
+  
+
+```
+
+```{r}
+
+prot_quants %>% lapply(function(x){
+  plotMissing(x$total)
+  plotMissing(x$rbp)
+})
+```
+```{r}
+saveRDS(prot_quants, '../results/prot_quants_thresholds.rds')
+```
+

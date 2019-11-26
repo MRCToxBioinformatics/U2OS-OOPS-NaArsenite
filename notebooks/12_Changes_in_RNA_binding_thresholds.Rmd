@@ -1,0 +1,455 @@
+---
+title: "03: Changes in RNA Binding"
+author: "Mariavittoria Pizzinga, Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warASng=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+## 1. Introduction  
+
+In this section of the code, we are finally doing the interesting analysis which is finding out if there are any RBPs that are differentially expressed between conditions. Having looked at the data thus far, the extreme variability of the RBP Unstarved vs Starved samples might mean that we cannot really do a differential analysis with that set. However, we'll give it a go and see what happen. 
+
+```{r 00_Reading-in-utility-function, eval=T, echo=F, warning=FALSE}
+
+source("../../CamProt_R/Utility.R")
+
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(limma)
+library(biobroom)
+library(Hmisc)
+library(MSnbase)
+library(biobroom)
+
+# set up standardised plotting scheme
+theme_set(theme_bw(base_size = 20) +
+            theme(panel.grid.major=element_blank(),
+                  panel.grid.minor=element_blank(),
+                  aspect.ratio=1))
+
+```
+
+```{r 01_Functions-for-analysis, eval=T, echo=F}
+
+# A set of functions needed within this script.
+
+#-----------------------------------------------------------------
+# Function  : make_design_matrix
+# Aim       : make a design matrix from a sample data file
+# Input     : data frame that contains a column called "Condition"
+#------------------------------------------------------------------
+
+# Design matrix for various comparisons
+make_design_matrix<-function(setup){
+  des = model.matrix(~setup$Condition)
+  rownames(des) = rownames(setup)
+  colnames(des) = gsub("setup\\$Condition","",colnames(des))
+  print(des)
+}
+
+#-----------------------------------------------------------------
+# Function  : my_volcano_plot
+# Aim       : make a volcano plot from topTable object 
+# Input     : data frame that contains a column called "Condition"
+#------------------------------------------------------------------
+my_volcanoplot <- function(topTableResults){
+  p <- topTableResults %>%
+    mutate(sig=ifelse(adj.P.Val<0.05, "sig.", "not sig.")) %>% # add "sig" column
+    ggplot(aes(logFC, -log10(P.Value), colour=sig)) +
+    geom_point(size=0.25) +
+    scale_colour_manual(values=c("black", cbPalette[6]), name="") # manually adjust colours
+  
+  return(p)
+}
+
+#-----------------------------------------------------------------
+# Function  : combine_esets
+# Aim       : combine Total and RBP datasets for limma analysis 
+# Input     : Two MSnSets - one for Total Proteome and one for OOPS
+# Output    : One combined MSnSet
+#------------------------------------------------------------------
+combine_esets <- function(total,rbp){
+
+  # make the column names for the two MSnSets uASque
+  colnames(total) <- paste0(colnames(total), "_Total")
+  colnames(rbp) <- paste0(colnames(rbp), "_OOPS")
+  
+  # make the ExpressionSet
+  combined_intensities <- ExpressionSet(cbind(exprs(total), exprs(rbp)))
+  
+  # Add the feature data
+  fData(combined_intensities) <- fData(total)
+  
+  # Add the phenotype data
+  pData(combined_intensities) <- rbind(pData(total), pData(rbp))
+  pData(combined_intensities)$Condition <- factor(sapply(strsplit(pData(combined_intensities)$Sample_name,"_"),"[[",1))
+  pData(combined_intensities)$Type <- factor(sapply(strsplit(rownames(pData(combined_intensities)),"_"),"[[",2),level=c("Total","OOPS"))
+  
+  return(combined_intensities)
+}
+
+
+#------------------------------------------------------------------------------
+# Function  : modify_output
+# Aim       : modify output from TopTable to just keep informative columns
+# Input     : output from 'run_limma'
+# Output    : simplified data frame with results of linear modelling
+#-------------------------------------------------------------------------------
+
+
+modify_output <- function(rbps_de,cols=c("Master.Protein.Accessions",
+       "Master.Protein.Descriptions",
+       "logFC", "CI.L", "CI.R", "AveExpr",
+       "t", "P.Value","adj.P.Val","B")){
+  rbps_mod = rbps_de[,cols]
+  rbps_mod$protein_desc = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"OS="),"[[",1)
+  rbps_mod$gene_name = sapply(strsplit(rbps_mod$Master.Protein.Descriptions,"GN=|PE="),"[[",2)
+  colnames(rbps_mod)[1] = "uniprot_id"
+  return(rbps_mod)
+}
+
+#------------------------------------------------------------------------------
+# Function  : run_limma
+# Aim       : Runs limma on combined OOPS and Total protein data
+# Input     : Combined dataset from section 4b and coefficient of interest
+# Output    : limma results
+#-------------------------------------------------------------------------------
+
+run_limma <- function(combined_intensities,coeff){
+  
+  condition <- combined_intensities$Condition
+  type <- combined_intensities$Type
+  sample_name <- combined_intensities$Sample_name
+  
+  # limma design matrix
+  design <- model.matrix(~0+condition*type)
+  
+  # Fit a linear model 
+  rna_binding_fit <- lmFit(combined_intensities, design)
+  
+  # Draw contrasts
+  rna_binding_fit <- contrasts.fit(rna_binding_fit, coefficients=coeff)
+  
+  # Compute moderated statistics and log odds of DE using empirical bayes moderation
+  rna_binding_fit <- eBayes(rna_binding_fit, trend=TRUE, robust=TRUE)
+  
+  # Look at the data
+  plotSA(rna_binding_fit)
+  
+  # Plotting sigASficance
+  rna_binding_p_value_status <- ifelse(rna_binding_fit$p.value[,coeff]<0.05, "sig", "not_sig")
+  limma::plotMA(rna_binding_fit, status=rna_binding_p_value_status, values=c("sig", "not_sig"),
+                col=c("magenta", "black"), cex=c(0.8,0.2), main="")
+  
+  # Count DE proteins
+  summary(decideTests(rna_binding_fit, p.value=0.05, adjust.method="BH"))
+  
+  # Volcano plot of all results
+  all_rna_binding_results <- topTable(rna_binding_fit, coef = coeff, n = Inf, confint=TRUE)
+  my_volcanoplot(all_rna_binding_results)
+  
+  # Return all results
+  return(all_rna_binding_results)
+
+}
+
+#------------------------------------------------------------------------------
+# Function  : simple_limma
+# Aim       : Runs limma on a single dataset - oops or total protein
+# Input     : MSnSet, design matrix and coefficient of interest
+# Output    : limma results
+#-------------------------------------------------------------------------------
+
+simple_limma <- function(protein_quant,des,coeff){
+  
+  # fit linear model to each protein
+  total_fit_lm <- lmFit(exprs(protein_quant), des)
+  
+  # extract results for coefficient of interest
+  total_fit_lm_c <- contrasts.fit(total_fit_lm, coefficients=coeff)
+  
+  # Relationship between mean and variance
+  # As expected, there is a relationship between mean intensity and variance, although this is almost all limited to the very low intensity values having high variance. 
+  #plotSA(total_fit_lm_c)
+  
+  # Below, we perform the emperical Bayesian shrinking of the std errors towards the trend (`trend=TRUE`). We will also use the `robust=TRUE` option to ensure that the outliers don't affect the trend estimation.
+
+  # shrink std errors to abundance vs. stdev trend
+  total_fit_lm_e_c <- eBayes(total_fit_lm_c, trend=TRUE, robust=TRUE)
+  #plotSA(total_fit_lm_e_c)
+  
+  # Identify significant changes
+  # Below, we plot the average intensity vs log change. This is a useful QC plot to show that nothing odd has happened with our linear modeling.
+  p_value_status <- ifelse(total_fit_lm_e_c$p.value[,coeff]<0.05, "sig", "not_sig")
+  
+  # plot
+  limma::plotMA(total_fit_lm_e_c, status=p_value_status,col=c("magenta", "black"), cex=c(0.8,0.1), main="")
+  
+  # Count DE proteins
+  summary(decideTests(total_fit_lm_e_c, p.value=0.05, adjust.method="BH"))
+  
+  # Note that most of these changes are relatively slight (<2-fold)
+  # Extract all results from limma (n=Inf)
+  all_results <- topTable(total_fit_lm_e_c, coef = coeff, n = Inf)
+  
+  # we'll make a coupld of volcano plots so easier to wrap this up into a function
+  my_volcanoplot(all_results)
+  
+  return(all_results)
+}
+
+#------------------------------------------------------------------------------
+# Function  : makeLongExprs
+# Aim       : Convert an expression matrix into the long form for plotting
+# Input     : MSnSet, list of proteins
+# Output    : Long form of expression data with variables in columns 
+#-------------------------------------------------------------------------------
+makeLongExprs <- function(obj, intersecting_proteins){
+  
+  obj_exprs <- exprs(obj[intersecting_proteins,])
+  colnames(obj_exprs) <- pData(obj)$Sample_name
+  
+  long_exprs <- obj_exprs %>%
+    data.frame() %>%
+    tibble::rownames_to_column("uniprotID") %>%
+    gather(key="Sample", value="Intensity", -uniprotID) %>%
+    separate(Sample, into=c("Condition", "Replicate"),sep="_")
+  
+  long_exprs$Condition = factor(long_exprs$Condition,levels=c("Ctrl","X100uM.Arsenite","X400uM.Arsenite"))
+  
+  return(long_exprs)
+}
+
+#------------------------------------------------------------------------------
+# Function  : plotTop10
+# Aim       : Plots Total vs RBP trend plots for a set of proteins
+# Input     : 
+#       combined_exprs : combined total and rbp expression in long form, 
+#       lowest_p_proteins : list of proteins, ideally with smallest p-value
+#       suf : Suffix used in the title of plots explaiASng which experiment it is
+# Output    : Long form of expression data with variables in columns 
+#-------------------------------------------------------------------------------
+plotTop10<-function(combined_exprs,lowest_p_proteins,suf){
+  test_df<- combined_exprs %>% 
+            filter(uniprotID %in% lowest_p_proteins) %>%
+            arrange(uniprotID, Condition, Type)
+  test_df$Type = factor(test_df$Type,levels = c("RBPS","Total"))
+  test_df$Entry.name <- gsub("_HUMAN", "", test_df$Entry.name)
+  
+  test_df %>%
+    ggplot(aes(Condition, Intensity)) +
+    geom_point() +
+    stat_summary(fun.y="mean", geom="line", aes(group=Type)) +
+    facet_grid(Entry.name~Type,scales = "free_y") +
+    xlab("") +
+    ylab("Protein abundance (log2)") +
+    theme(axis.text.x=element_text(size=12, angle=90, vjust=0.5, hjust=1),
+          legend.position="bottom",
+          title = element_text(vjust = 1,hjust=0.5,size=12))+labs(title=suf)
+}
+
+```
+## 2. Reading in normalised data
+
+We start by reading in the normalised data and then setting up for a Limma analysis
+
+```{r 02_Reading-in-data}
+
+prot_quants <- readRDS('../results/prot_quants_thresholds.rds')
+```
+
+## 3. LIMMA for differential protein expression analysis
+LIMMA stands for Linear Models for Microarray and RNA-Seq Data and is a package used for the analysis of gene expression data from microarrays or RNAseq experiments. It's major selling point is that it is able to use linear models to assess differential expression in the context of multifactor designed experiments. Rather usefully, limma does distinguish data to be "from proteins" or "from RNA" which makes it quite handy to apply to Proteomics data.There are a few steps to DE analysis by limma.  
+1. Create a data matrix with samples in columns and proteins in rows. We can use the "exprs" slot in an MSnSet for this. 
+2. Create a design matrix that tells limma about samples, conditions and replicates. We can use the `pData` from MSnSet for this.  
+3. Fit a linear model to the data(1) using the design(2).  
+4. Define contrasts of interest i.e which gruops of samples you want to test for differential protein expression.    
+5. Extract results for the contrast of interest.  
+6. Look at the top proteins.  
+
+Initially, we perform this analysis for each of the 4 datasets separately.
+
+## 3a. Combining total and RBP data
+
+It is relatively easy to perform a pairwise comparison between treated and untreated samples either in the RBP or Total proteome.
+
+```{r 3_Limma-on-combined-data-total-only}
+
+limma_total_results <- prot_quants %>% lapply(function(prot_quant){
+
+  prot_quant_total <- prot_quant$total
+  exprs(prot_quant_total) <- log2(exprs(prot_quant_total))
+  pData(prot_quant_total)$Condition <- factor(
+    pData(prot_quant_total)$Condition,levels = c("Ctrl","Arsenite100","Arsenite400"))
+  condition <- prot_quant_total$Condition
+
+  design<-model.matrix(~condition)
+  colnames(design) <- gsub("[:-]", ".", colnames(design))
+  # Calculate correlation between replicates
+  #corfit <- duplicateCorrelation(comb_intensities,design)
+  
+  # Fit a linear model to include a block and correlation
+  fit <- lmFit(prot_quant_total,design)#,correlation=corfit$consensus)
+
+  # Extract contrasts from the fitted linear model
+  fit2 <- contrasts.fit(fit, coefficients=c("conditionArsenite100",
+                                            "conditionArsenite400"))
+  
+  # Calculating the F-statistic
+  fit2 <- eBayes(fit2)
+  
+  # Extracting the top hits for each contrast
+  Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "conditionArsenite100",number = Inf,confint = T)
+  Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "conditionArsenite400",number = Inf,confint = T)
+
+  print(Ctrl.100uM %>% filter(adj.P.Val <= 0.1) %>% dim())
+  print(Ctrl.400uM %>% filter(adj.P.Val <= 0.1) %>% dim())
+  
+  return(list('100uM'=Ctrl.100uM, '400uM'=Ctrl.400uM))
+
+})
+
+print(names(limma_total_results))
+```
+
+What about changes in RNA binding? For this, we need combine the two MSnSets into a single ExpressionSet. We start by intersecting proteins within the Arsenite experiments so we can compare just those proteins that are captures across both total and RBP datasets. 
+
+
+```{r 3a_Intersecting-proteins}
+intersecting_as_proteins <- prot_quants %>% names() %>% lapply(function(x){
+  inter_proteins <- intersect(rownames(prot_quants[[x]]$total), rownames(prot_quants[[x]]$rbp))
+  print(sprintf("Number of RBPs (%s). Also captured in the Total Proteome for Control vs Arsenite treated samples: %s", length(rownames(prot_quants[[x]]$rbp)), length(inter_proteins)))
+  return(inter_proteins)
+})
+names(intersecting_as_proteins) <- names(prot_quants)
+```
+
+```{r}
+combined_as_intensities <- prot_quants %>% names() %>% lapply(function(x){
+  inter_proteins <- intersecting_as_proteins[[x]]
+  total_as_for_combination <- prot_quants[[x]]$total[inter_proteins,]
+  rbp_as_for_combination <- prot_quants[[x]]$rbp[inter_proteins,]
+  
+  combined_as_intensities = combine_esets(total_as_for_combination, rbp_as_for_combination)
+  exprs(combined_as_intensities) <- log2(exprs(combined_as_intensities))
+  pData(combined_as_intensities)$Condition = factor(pData(combined_as_intensities)$Condition,levels =
+                                                      c("Ctrl","100uM","400uM"))
+  return(combined_as_intensities)
+  })
+# Subset of intersecting AS proteins only
+names(combined_as_intensities) <- names(prot_quants)
+
+```
+
+
+The we run `limma` on the combined intensities and this time test for a signficant interaction coefficient. There are 224 proteins differentially expressed in cells treated with 100uM NaAs2 relative to Control and similarly, there are 184 proteins differentially expressed in cells treated with 400uM NaAs2 relative to Control.
+```{r 3c_Limma-on-combined-data}
+
+limma_results <- combined_as_intensities %>% lapply(function(comb_intensities){
+
+  condition <- comb_intensities$Condition
+  type <- comb_intensities$Type
+  design<-model.matrix(~0+condition*type)
+  colnames(design) <- gsub("[:-]", ".", colnames(design))
+  # Calculate correlation between replicates
+  #corfit <- duplicateCorrelation(comb_intensities,design)
+  
+  # Fit a linear model to include a block and correlation
+  fit <- lmFit(comb_intensities,design)#,correlation=corfit$consensus)
+  
+  # Extract contrasts from the fitted linear model
+  fit2 <- contrasts.fit(fit, coefficients=c("condition100uM.typeOOPS",
+                                            "condition400uM.typeOOPS"))
+  
+  # Calculating the F-statistic
+  fit2 <- eBayes(fit2)
+  
+  # Extracting the top hits for each contrast
+  Ctrl.100uM = topTable(fit2, adjust = "BH",coef = "condition100uM.typeOOPS",number = Inf,confint = T)
+  Ctrl.400uM = topTable(fit2, adjust = "BH",coef = "condition400uM.typeOOPS",number = Inf,confint = T)
+
+  print(Ctrl.100uM %>% filter(adj.P.Val <= 0.1) %>% dim())
+  print(Ctrl.400uM %>% filter(adj.P.Val <= 0.1) %>% dim())
+  
+  return(list('100uM'=Ctrl.100uM, '400uM'=Ctrl.400uM))
+
+})
+
+print(names(limma_results))
+```
+
+
+Let's plot the significant proteins when filtering with Interference=0 in all the datasets:
+```{r}
+sig_int_0 <- limma_results$Int_0$`400uM` %>%
+  filter(adj.P.Val <= 0.1) %>%
+  pull(Master.Protein.Accessions)
+colnames(limma_results$Int_0$`400uM`)
+
+limma_results$Int_0$`400uM` %>% select(logFC, CI.L, CI.R, AveExpr, t, P.Value, adj.P.Val,B) %>%
+  merge((limma_results$Int_50$`400uM` %>%
+           select(logFC, CI.L, CI.R, AveExpr, t, P.Value, adj.P.Val,B)),
+        by='row.names') %>%
+  ggplot(aes(logFC.x, logFC.y, colour=interaction(adj.P.Val.x<0.1, adj.P.Val.y<0.1))) +
+  geom_point() +
+  scale_colour_manual(name='', values=cbPalette) +
+  my_theme +
+  xlab('Interference<=0') +
+  ylab('Interference<=50')
+
+
+limma_results$Int_0$`400uM` %>% select(logFC) %>%
+  merge((limma_results$Int_50$`400uM` %>%
+           select(logFC)),
+        by='row.names') %>%
+  gather(key='filter', value='fc', -Row.names) %>%
+  ggplot(aes(fc)) + geom_density(aes(colour=filter)) +
+  my_theme
+
+
+```
+
+
+```{r, fig.height=10, fig.width=10}
+
+combined_as_intensities$Int_50[head(sig_int_0),] %>% tidy(addPheno=TRUE) %>%
+  ggplot(aes(Condition, value)) + geom_point() +
+  my_theme +
+  facet_wrap(~gene*Type, scales='free') +
+  theme(text=element_text(size=10))
+
+combined_as_intensities$Int_0[head(sig_int_0),] %>% tidy(addPheno=TRUE) %>%
+  ggplot(aes(Condition, value)) + geom_point() +
+  my_theme +
+  facet_wrap(~gene*Type, scales='free') +
+  theme(text=element_text(size=10))
+```
+
+```{r}
+saveRDS(limma_results, '../results/limma_results_thresholds.rds')
+saveRDS(limma_total_results, '../results/limma_total_results_thresholds.rds')
+```
+
+```{r}
+limma_results %>% sapply(function(x){
+  x$`100uM`%>% nrow()
+})
+
+limma_total_results %>% sapply(function(x){
+  x$`100uM`%>% nrow()
+})
+```
+

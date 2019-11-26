@@ -7,7 +7,6 @@ We have observed some evidence of ratio compression for PSMs with high interfere
 
 ```{r}
 source('../../CamProt_R/Utility.R')
-source('../../CamProt_R/PTM.R') #parsePSMAndAggregate is in here. Really should be moved to Utility!
 library(tidyverse)
 library(Hmisc)
 ```
@@ -16,6 +15,7 @@ library(Hmisc)
 samples_inf <- '../raw/samples.tsv'
 ```
  
+Read in the PSM level data
 ```{r}
 total_psm_raw <- "../raw/Total_Arsenide_TMT_PSMs.txt"
 total_psm <- parse_features(total_psm_raw, TMT=TRUE, filter_crap=TRUE, filter_associated_crap=TRUE, level='PSM')
@@ -34,29 +34,19 @@ PSMToProtein <- function(
   mod_col="Modifications" # column to identify the modifications for grouping PSM into pep seq + mod
 ){
 
-  ####################################################
   # Remove PSMs with Interference above threshold
-  ####################################################
   raw_res_int <- raw_res[fData(raw_res)$Isolation.Interference.in.Percent<=interference_threshold,]
   
-  ####################################################
   # Remove PSMs with Signal:Noise (SN) below threshold
-  ####################################################
   raw_res_sn <- raw_res_int[fData(raw_res_int)$Average.Reporter.SN>=SN_threshold,]
   
-  ###################################################
   # Remove low intensity estimates
-  ###################################################
   exprs(raw_res_sn)[exprs(raw_res_sn)<intensity_filter] <- NA
   
-  ######################################################
   # Aggregate to unique peptide sequences
-  ######################################################
   agg_pep <- suppressWarnings(suppressMessages(agg_to_peptides(raw_res_sn)))
   
-  ######################################
   # Aggregate to unique protein
-  ######################################
   agg_prot <- suppressWarnings(suppressMessages(agg_to_protein(agg_pep, master_protein_col))) %>%
     centerNormalise()
   
@@ -72,7 +62,7 @@ x <- PSMToProtein(total_psm_res, SN_threshold=5)
 ```{r}
 dim(x)
 ```
-Function to obtain the fold changes for each comparison
+Function to obtain the fold changes for each comparison and plot to check this is working
 ```{r}
 getFoldChanges <- function(obj, group1, group2){
 
@@ -117,6 +107,7 @@ getAllFoldChanges <- function(obj){
 getAllFoldChanges(x) %>% ggplot(aes(fc, colour=comp)) + geom_density() + my_theme
 ```
 
+Get fold changes for each possible combination
 ```{r}
 fc_dfs <- NULL
 for(sn in c(0,5,10,100)){
@@ -131,6 +122,23 @@ for(sn in c(0,5,10,100)){
 }
 ```
 
+How many proteins per combination?
+```{r}
+n_proteins <- fc_dfs %>% lapply(function(x){
+  length(unique(x$protein))
+})
+
+n_proteins <- n_proteins %>% data.frame() %>% t() %>% data.frame() %>% 
+  tibble::rownames_to_column() %>%
+  mutate(parameters=gsub("X", "", rowname)) %>%
+  separate(parameters, into=c("SN", "interference")) %>% select(-rowname)
+colnames(n_proteins)[1] <- 'proteins'
+
+n_proteins %>% filter(SN==100) %>% select(-SN)
+n_proteins %>% filter(interference==0) %>% select(-interference)
+```
+
+Plot all fold changes. Testing aethestics for plotting
 ```{r}
 
 do.call('rbind', fc_dfs) %>%
@@ -142,14 +150,13 @@ do.call('rbind', fc_dfs) %>%
   facet_grid(comp~int, scales='free_y')
 ```
 
+We're only really interested in subsets of proteins. Let's define these via GO annotations
 ```{r}
 human_go <- readRDS('../shared_files/h_sapiens_go_full.rds')
 
 translation_init_activity <- human_go %>% filter(GO.ID=='GO:0003743') %>% pull(UNIPROTKB)
-translation_elong_activity <- human_go %>% filter(GO.ID=='GO:0003746') %>% pull(UNIPROTKB)
-translation_term_activity <- human_go %>% filter(GO.ID=='GO:0008079') %>% pull(UNIPROTKB)
 tRNA_AA <- human_go %>% filter(GO.ID=='GO:0004812') %>% pull(UNIPROTKB)
-translocon <- human_go %>% filter(GO.ID=='GO:0006616') %>% pull(UNIPROTKB)
+
 
 ribosome_structural_component <- human_go %>% filter(GO.ID=='GO:0003735') %>% pull(UNIPROTKB)
 cytosol <- human_go %>% filter(GO.ID=='GO:0005829') %>% pull(UNIPROTKB)
@@ -170,5 +177,66 @@ do.call('rbind', fc_dfs) %>%
   ggplot(aes(fc, colour=factor(int))) + geom_density() + my_theme +
   facet_grid(comp~sn, scales='free_y')
 ```
+```{r, fig.width=6, fig.height=6}
+sn_100_int_0_proteins <- unique(fc_dfs[["100_0"]]$protein)
+print(length(sn_100_int_0_proteins))
 
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% ribosome_structural_component_cytosol, 
+         int==0, protein %in% sn_100_int_0_proteins) %>%
+  ggplot(aes(fc, colour=factor(sn))) +
+  geom_density() + my_theme +
+  geom_vline(xintercept=0, linetype=2, colour='grey50', size=0.5) +
+  facet_grid(comp~., scales='free_y') +
+  theme(strip.text=element_text(size=10)) +
+  scale_colour_manual(values=c("black", cbPalette[c(2:4,7)]),name='SN') +
+  ylab("Density") +
+  scale_x_continuous(name="Fold change (log2)")
+```
+
+```{r, fig.width=6, fig.height=6}
+sn_100_int_0_proteins <- unique(fc_dfs[["100_0"]]$protein)
+print(length(sn_100_int_0_proteins))
+
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% ribosome_structural_component_cytosol, 
+         sn==100, protein %in% sn_100_int_0_proteins) %>%
+  ggplot(aes(fc, colour=factor(int))) +
+  geom_density() + my_theme +
+  geom_vline(xintercept=0, linetype=2, colour='grey50', size=0.5) +
+  facet_grid(comp~., scales='free_y') +
+  theme(strip.text=element_text(size=10)) +
+  scale_colour_manual(values=c("black", cbPalette[c(2:4,7)]),name='Interference') +
+  ylab("Density") +
+  scale_x_continuous(name="Fold change (log2)")
+```
+```{r}
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% translation_init_activity, sn==100,
+         protein %in% sn_100_int_0_proteins) %>%
+  ggplot(aes(fc, colour=factor(int))) +
+  geom_density() + my_theme +
+  geom_vline(xintercept=0, linetype=2, colour='grey50', size=0.5) +
+  facet_grid(comp~., scales='free_y') +
+  theme(strip.text=element_text(size=10)) +
+  scale_colour_manual(values=c("black", cbPalette[c(2:4,7)]),name='Interference') +
+  ylab("Density") +
+  scale_x_continuous(name="Fold change (log2)")
+
+```
+```{r}
+do.call('rbind', fc_dfs) %>%
+  filter(protein %in% tRNA_AA, sn==100,
+         protein %in% sn_100_int_0_proteins) %>%
+  ggplot(aes(fc, colour=factor(int))) +
+  geom_density() + my_theme +
+  geom_vline(xintercept=0, linetype=2, colour='grey50', size=0.5) +
+  facet_grid(comp~., scales='free_y') +
+  theme(strip.text=element_text(size=10)) +
+  scale_colour_manual(values=c("black", cbPalette[c(2:4,7)]),name='Interference') +
+  ylab("Density") +
+  scale_x_continuous(name="Fold change (log2)")
+
+
+```
 

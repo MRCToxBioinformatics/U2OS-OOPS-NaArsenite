@@ -1,0 +1,122 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Correlate OOPS and XRNAX arsenite
+
+
+```{r}
+library(tidyverse)
+source('../../CamProt_R/Utility.R')
+```
+
+```{r}
+XRNAX_total <- readxl::read_excel('../shared_files/XRNAX_arsentite.xlsx', sheet=2) %>%
+  mutate(change_0_30=log2(`Mean total proteome 30 min`/`Mean total proteome 0 min`))
+#%>% mutate(change_0_30=`Effective RNA binding 30 min`/`Effective RNA binding 0 min`)
+
+XRNAX <- readxl::read_excel('../shared_files/XRNAX_arsentite_s4.xlsx', sheet=2) %>%
+  mutate(change_0_30=log2(`Effective RNA binding 30 min`/`Effective RNA binding 0 min`))
+
+limma_results <- readRDS('../results/limma_results_thresholds.rds')
+limma_total_results <- readRDS('../results/limma_total_results_thresholds.rds')
+
+```
+
+```{r}
+XRNAX_total %>% dim()
+XRNAX %>% dim()
+```
+
+```{r}
+
+human_go <- readRDS("../shared_files/h_sapiens_go_full.rds")
+RBPs <- human_go %>% filter(GO.ID=="GO:0003723") %>% pull(UNIPROTKB)
+
+glycoproteins <- read_delim("../shared_files/glycoproteins.tsv", delim="\t")$protein
+
+para <- human_go %>% filter(GO.ID=='GO:0042382') %>% pull(UNIPROTKB)
+mrna_splicing <- human_go %>% filter(GO.ID=='GO:0000398') %>% pull(UNIPROTKB)
+
+translation_init <- human_go %>% filter(GO.ID=='GO:0006413') %>% pull(UNIPROTKB)
+
+translation_elong <- human_go %>% filter(GO.ID=='GO:0006414') %>% pull(UNIPROTKB)
+
+ribosome_structural <- human_go %>% filter(GO.ID=='GO:0003735') %>% pull(UNIPROTKB)
+
+eif3 <- human_go %>% filter(GO.ID=='GO:0005852') %>% pull(UNIPROTKB)
+```
+
+
+```{r}
+
+plotOOPSvsXRNA <- function(oops_data, xrnax_data, x='change_0_30', y='logFC', foi, foi_name){
+
+  .data <- oops_data  %>% merge(xrnax_data, by.y='Uniprot ID', by.x='row.names')
+  
+  .data$XRNAX <- .data[[x]]
+  .data$OOPS <- .data[[y]]
+
+  if(!missing(foi)){
+  .data <- .data %>% mutate(foi=Row.names %in% foi)
+  }
+
+  p <- .data %>%  
+  ggplot(aes(XRNAX, OOPS)) +
+  geom_point(alpha=0.5, size=1) +
+  theme_bw() +
+  geom_smooth(method='lm')
+  
+  if(!missing(foi)){
+    
+    p <- p + aes(colour=foi) +
+      scale_colour_manual(name=foi_name, values=cbPalette[1:2])
+    
+    p2 <- .data %>%
+      select(OOPS, XRNAX, Row.names) %>%
+    gather(key='Experiment', value='fold_change', -Row.names) %>%
+      mutate(foi=ifelse(Row.names %in% foi, foi_name, 'other')) %>%
+    ggplot(aes(fold_change, colour=foi)) +
+    geom_density() +
+      scale_colour_manual(values=cbPalette[1:2], name='') +
+    theme_bw() +
+      facet_wrap(~Experiment)
+    
+  invisible(list('p'=p, 'p2'=p2))
+  }
+  
+  else{
+    invisible(p)
+  }
+  
+}
+```
+
+```{r}
+for(int_thresh in names(limma_total_results)){
+  print(plotOOPSvsXRNA(limma_total_results[[int_thresh]]$`400uM`, XRNAX_total, foi=translation_init, foi_name='Translation init.'))  
+}
+
+```
+```{r}
+for(int_thresh in names(limma_results)){
+  print(plotOOPSvsXRNA(limma_results[[int_thresh]]$`400uM`, XRNAX, foi=translation_init, foi_name='Translation init.'))  
+}
+```
+
+
+```{r}
+
+for(int_thresh in names(limma_results)){
+  print(plotOOPSvsXRNA(limma_results[[int_thresh]]$`400uM`, XRNAX, 
+                       foi=ribosome_structural, foi_name='Ribosome'))  
+}
+
+
+
+
+
+```
+
+

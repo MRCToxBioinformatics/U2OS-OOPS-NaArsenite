@@ -1,0 +1,224 @@
+---
+title: "1: Sample PCAs with differing thresholds"
+author: "Mariavittoria Pizzinga,Eneko Villanueva,Rayner Queiroz, Manasa Ramakrishna, Tom Smith"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.width=12,fig.height=8,warning=FALSE, message=FALSE,tidy = TRUE,tidy.opts=list(width.cutoff=50))
+```
+
+
+```{r 00_Reading-in-untility function}
+
+suppressMessages(library(gridExtra))
+source("../../CamProt_R/Utility.R")
+```
+
+```{r 01_Functions, eval = T, echo = F}
+
+# A set of functions needed within this script.
+
+#-------------------------------------------------------------
+# Function  : plotSamplePCA
+# Aim       : Function to plot PCAs for a given set of samples
+#--------------------------------------------------------------
+plotSamplePCA <- function(obj){
+  .data <- obj %>% filterNA() %>% exprs()
+  
+  pca <- prcomp(t(.data))
+  
+  loadings <- pca$sdev^2
+  #plot(loadings/sum(loadings))
+  
+  projections <- data.frame(pca$x) %>%
+    merge(pData(obj), by='row.names') %>%
+    tibble::rownames_to_column("sample")
+  
+  p1 <- projections %>%
+    ggplot(aes(PC1, PC2, shape=Replicate, colour=Condition)) +
+    geom_point(size=5) +
+    my_theme
+  
+  p2 <- p1 + aes(PC3, PC4)+theme(legend.position = "none")
+  p3 <- p1 + aes(PC5, PC6)+theme(legend.position = "none")
+  
+  #print(p)
+  #print(p2)
+  #print(p3)
+  
+  pt = arrangeGrob(p1,p2,p3,nrow=2,layout_matrix = rbind(c(1,1),c(2,3)))
+  return(list(l = loadings,pca=pt))
+}
+
+
+#--------------------------------------------------------------
+# Function  : plotCVs
+# Aim       : Function to plot Co-efficient of Variation values
+#--------------------------------------------------------------
+plotCVs <- function(obj){
+  tmp <- exprs(obj)
+  colnames(tmp) <- pData(obj)$Sample_name
+  CVs <- melt(tmp) %>% separate(Var2, into=c("Condition", "Replicate"),sep="_") %>%
+    group_by(Var1, Condition) %>%
+    mutate("CV"=sd(2^value)/mean(2^value), "CV_log"=sd(value)/mean(value))
+  
+  p <- ggplot(CVs, aes(x=CV, colour=Condition)) + geom_density() + my_theme
+  return(p)
+}
+
+```
+
+## 2. Reading normalised data  
+
+We start by reading in the normalised RDS files generated using the first analysis notebook '1_aggregate_to_protein_an_qc.Rmd'. Remember that the data was aggregated into peptides, then into proteins, missing values were imputed using "min" and finally, samples were log centre normalised. Now we want to see if there is anything odd about the data despite us having corrected for any technical artefacts from the experimental process. 
+
+```{r 02_Reading-in-normalised-data-from-aggregation-analysis}
+
+protein_quant <- readRDS("../results/prot_quants_thresholds.rds")
+
+
+```
+## 3. Plotting variability  
+We would like to see the separation of samples into their treatment groups across all the datasets. RBP = OOPS. However, no experiment is perfect so we expect some degree of variability within each treatment group across the 3-4 replicates. What we want to keep an eye out for is outlier samples within each group. 
+
+### 3a. Initial PCAs
+We start the process by plotting PCAs - we draw them in pairs PC1&2, PC3&4, PC5&6. We hope that there is no pattern or separation by replicate as this would indicate batch effects. PCAs will also flag any samples that are overall quite different to their replicate samples. All the plots can be found in the folder "../plots" and have the suffix "*PCA-on-normalised-data.pdf".
+
+```{r 3a_Plotting-PCAs}
+
+names = c("TotalProt-Control-vs-NaAs2-Treated","RBPs-Control-vs-NaAs2-Treated")
+
+protein_quant %>% names() %>% lapply(function(x){
+  c <- 1
+  for(i in list(protein_quant[[x]]$total, protein_quant[[x]]$rbp)){
+    p = plotSamplePCA(i)
+    pdf(paste("../plots/", names[c],
+              sprintf("_PCA_%s-on-normalised-data.pdf", x),sep=""),
+        paper="a4r",width=14,height=8)
+    plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+    plot(p$pca)
+    dev.off()
+    plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+    plot(p$pca)
+    c <- c+1
+  }
+})
+
+```
+
+### 3c. PCAs after dodgey samples being removed
+Looking at the data values, the samples we think are problematic have very high Median Absolute Deviation values relative to their replicate friends. Interestingly, tag 126 has very high MAD for both Total and RBP experiments. For now, we will remove those samples with the largest mad in each of the experiments. Again, these PCAs can be found in the folder "../plots/" and have the suffix "PCA-on-normalised-data-dodgey-samples-removed.pdf".
+
+```{r 3c_Plotting-PCA-without-dodgey-samples}
+
+# Removing dodgey samples
+total_as_protein_quant_nd = total_as_protein_quant[,grep("126",sampleNames(total_as_protein_quant),invert=T)]
+oops_as_protein_quant_nd = oops_as_protein_quant[,grep("126",sampleNames(oops_as_protein_quant),invert=T)]
+
+names = c("TotalProt-Control-vs-NaAs2-Treated","RBPs-Control-vs-NaAs2-Treated")
+c = 1
+
+for(i in list(total_as_protein_quant_nd,oops_as_protein_quant_nd)){
+  p = plotSamplePCA(i)
+  pdf(paste("../plots/",names[c],"_PCA-on-normalised-data-dodgey-samples-removed.pdf",sep=""),paper="a4r",width=14,height=8)
+  plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+  plot(p$pca)
+  dev.off()
+  plot(p$l/sum(p$l),col="red",ylab = "Variation explained")
+  plot(p$pca)
+  c = c+1
+}
+
+saveRDS(total_as_protein_quant_nd, file="../results/total_as_res_pro_agg_norm_nododgey.rds")
+saveRDS(oops_as_protein_quant_nd, file="../results/rbp_as_res_pro_agg_norm_nododgey.rds")
+
+```
+
+## 4. Combining all datasets  
+This won't be used downstream but is done to check whether there is clear separation between the experiments conducted in the study. To do so, we focus only on those proteins that are present in all treatments/conditions and are present in total and rbp proteomes. 
+
+```{r 04_Combining-all-datasets}
+
+# Define intersecting proteins
+intersecting_as_proteins <- intersect(rownames(total_as_protein_quant), rownames(oops_as_protein_quant))
+print(length(intersecting_as_proteins))
+
+# Combining data across all experiments
+total_as_exprs <- exprs(total_as_protein_quant[intersecting_as_proteins,])
+colnames(total_as_exprs) <- paste0("Total-AS_", pData(total_as_protein_quant)$Sample_name)
+
+oops_as_exprs <- exprs(oops_as_protein_quant[intersecting_as_proteins,])
+colnames(oops_as_exprs) <- paste0("RBP-AS_", pData(oops_as_protein_quant)$Sample_name)
+
+# Mega expression matrix
+combined_exprs <- cbind(total_as_exprs,oops_as_exprs)
+
+```
+
+### 4a. Mega PCA across all samples
+
+We plot PC1 vs PC2, PC3 vs PC4 and PC5 vs PC6 for these 20 samples below without the dodgey ones from above.Then we remake the plot having removed what we call the "dodgey" samples as defined above.
+
+```{r 4a_mega-PCA-of-all-samples}
+# Mega PCA of all samples
+pca <- prcomp(t(combined_exprs))
+loadings <- pca$sdev^2
+
+# Annotate samples to enable PCA labelling
+projections <- data.frame(pca$x) %>%
+  tibble::rownames_to_column("sample") %>%
+  separate(sample, into=c("Type", "Condition", "Replicate"),sep="_")
+
+# Plotting the PCA with labels so we can tell which samples are most variable. 
+library(ggrepel)
+p <- projections %>%
+  ggplot(aes(PC1, PC2, shape=Condition, colour=Type)) +
+  geom_point(size=3) + geom_text_repel(aes(label=Replicate))+scale_shape_manual(values = c(15,16,17,18)) +theme_classic()
+
+p2 <- p + aes(PC3, PC4)+theme(legend.position = "none")
+p3 <- p + aes(PC5, PC6)+theme(legend.position = "none")
+
+pdf("../plots/Mega-PCA-of-all-20-samples-3-conditions-3-replicates-samples.pdf",paper="a4r",width=14,height=8)
+plot(loadings/sum(loadings))
+pt = arrangeGrob(p,p2,p3,nrow=2,layout_matrix = rbind(c(1,1),c(2,3)))
+plot(pt)
+dev.off()
+
+plot(pt)
+
+```
+
+Looking at the PCA plots, albeit using a subset of the total data, overall, the experiment seems to have worked pretty well. PC1 separates the Total from the OOPS/RBP samples very very clearly. PC2 seems to separate the slightly dodgey controls (Tag126). Within the first three components, we capture 82% (PC1) + 8% (PC2) + 7% (PC3) = 95% of the variation in the data arising mainly from the fact that they are Total vs RBP samples and also protein extractions. The intra-condition variability is very very low i.e the replicates, for the most part, cluster tightly together with the exception of the RBP-US samples.  
+
+### 4b. Coefficient of variation  
+Below, we plot the distributions of coefficient of variance for each of the datasets. This is just an additional QC step that the data all looks OK and that there is no big difference in the variance within a condition since this could invalidate the assumptions of heteroscedasticity (same variance per group) that we will make in the modeling of protien abundance later. 
+
+```{r 4b_Coefficient-of-variation}
+
+p_as_total <- plotCVs(total_as_protein_quant_nd) + ggtitle("Total_AS") + xlim(0,1)
+#print(p_as_total)
+#print(p_as_total + aes(CV_log))
+
+p_as_oops <- plotCVs(oops_as_protein_quant_nd) + ggtitle("RBPs_AS") + xlim(0,1)
+#print(p_as_oops)
+#print(p_as_oops + aes(CV_log))
+
+g = arrangeGrob(p_as_total + aes(CV_log),p_as_oops + aes(CV_log),nrow=2)
+
+pdf("../plots/CV-plots-all-4-experiments-no-dodgey-samples.pdf",paper="a4r",width=14,height=8)
+plot(g)
+dev.off()
+plot(g)
+
+```
+The CVs look as good as we would expect for TMT. 50% of the CVs should be < 0.2 after normalisation - [see here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4361338/). Also the OOPS data is *not* notably more variable which is good to see.
+
